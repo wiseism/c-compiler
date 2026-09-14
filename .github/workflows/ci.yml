@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  llvm-api:
+    name: LLVM API backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bison clang cmake flex llvm-dev ninja-build
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-api -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR="$(llvm-config --cmakedir)"
+
+      - name: Build
+        run: cmake --build build-api --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-api --output-on-failure
+
+  text-ir:
+    name: Textual LLVM IR backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bison clang cmake flex ninja-build
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-text -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE
+
+      - name: Build
+        run: cmake --build build-text --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-text --output-on-failure

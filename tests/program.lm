@@ -1,0 +1,44 @@
+extern int putchar(int c);
+
+int factorial(int n) {
+    int result = 1;
+    while (n > 1) {
+        result = result * n;
+        n = n - 1;
+    }
+    return result;
+}
+
+int choose(int condition, int left, int right) {
+    if (condition && left != 0) {
+        return left;
+    } else {
+        return right;
+    }
+}
+
+int operators(int value) {
+    int result = -value + 20 / 2;
+    if (!(result <= 4) && result >= 5 && result != 6) {
+        result = result + 11 % 4;
+    }
+    {
+        int result = 100;
+        result = result + 1;
+    }
+    return result;
+}
+
+int main() {
+    // Both logical operators must skip their side-effecting RHS here.
+    if (0 && putchar(88)) {
+        return 100;
+    }
+    int answer = factorial(4) + choose(1, operators(5) + 10, 99);
+    if (answer == 42 || putchar(88)) {
+        putchar(79);
+        putchar(75);
+        putchar(10);
+    }
+    return answer;
+}

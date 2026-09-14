@@ -1,9 +1,87 @@
-# README
-前端bison、flex，后端llvm，直接光速实现一个编译器。
-编译器其实很工程，只是工作层级比web后端更接近计算机底层而已。
-如果你真的做过编译的项目，就知道这里面一样一堆dirty work，可能有时候比web后端还dirty，你可能一整天在那查某个segmentation fault到底咋回事。强烈建议大家祛魅。
-segment fault太真实了，挨个pass去找
--mllvm -print-changed
-其实难点在于解决小的技术突破，而并非实现一个已有的工具。比如malloc会形成PA的fragmentation，分配的时候怎么才会减少scatter，也降低page的负担。这还是open question，谁能解决别说写到简历里面，就是发paper都问题不大。可惜意识到很多这样的open question就很难了，提出真正的超越state of the art解决方案就更难了。相比之下还是抄书写个CPU更简单。
-不管有多少dirty work、抄了多少别人的prototype 大学生实现一个编译器肯定比做一个商城难度大 哪怕是组件化的，但HR不会认的
-能力 跟 视野，前者决定下限，后者决定上限
+# Lumen C
+
+一个刻意保持小而完整的编译器：前端由 **Flex + Bison** 实现，后端使用
+**LLVM IR**。它不是表达式 demo；源码会经过词法分析、语法分析、AST、作用域与
+语义检查、LLVM 验证，最终生成可交给 `clang` 链接的 `.ll` 文件。
+
+## 已支持的语言
+
+- 唯一数据类型 `int`（32 位有符号整数）
+- 函数定义、递归、前向调用和 `extern` 函数声明
+- 局部变量、初始化、赋值及词法作用域
+- `+ - * / %`、比较、`!`，以及真正短路求值的 `&&` / `||`
+- `if` / `else`、`while`、代码块和 `return`
+- `//` 与 `/* ... */` 注释
+- 带源码行号的语法和语义诊断
+
+每个函数都必须显式 `return`。目前没有全局变量、指针、数组、浮点数和用户自定义
+类型；这些边界是语言设计的一部分，而不是偷偷按 C 语义处理。
+
+## 构建
+
+依赖 CMake 3.20+、C++17 编译器、Flex 2.6+、Bison 3.8+ 和能够处理 LLVM IR
+的 `clang`。如果能找到 `LLVMConfig.cmake`，构建会自动使用官方 LLVM C++ API；
+否则使用内置的文本 IR 生成器，输出仍交给 LLVM/Clang 验证和链接。
+
+macOS（Homebrew）：
+
+```bash
+brew install cmake flex bison llvm
+cmake -S . -B build -DLLVM_DIR="$(brew --prefix llvm)/lib/cmake/llvm"
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+本机已有的 `/usr/local/llvm` 会被 CMake 自动发现；其他非标准安装位置可通过
+`-DLLVM_DIR=/path/to/lib/cmake/llvm` 指定。也可以用
+`-DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE` 显式测试文本 IR 后端。
+
+## 使用
+
+```bash
+./build/lumenc examples/fibonacci.lm -o fibonacci.ll
+clang fibonacci.ll -o fibonacci
+./fibonacci
+```
+
+省略 `-o` 时 LLVM IR 写到标准输出：
+
+```bash
+./build/lumenc examples/fibonacci.lm | less
+```
+
+示例程序：
+
+```c
+extern int putchar(int c);
+
+int square(int x) {
+    return x * x;
+}
+
+int main() {
+    int n = 6;
+    if (n > 0) {
+        return square(n);
+    }
+    return 0;
+}
+```
+
+## 结构
+
+```text
+src/lexer.l       Flex 词法规则
+src/parser.y      Bison 文法与 AST 构造
+include/ast.hpp   所有权明确的 AST
+src/codegen.cpp   语义检查与 LLVM IR 生成
+src/main.cpp      命令行驱动
+tests/e2e.sh      源码 → IR → 原生程序的端到端测试
+```
+
+进一步阅读：[架构设计](docs/architecture.md) ·
+[详细设计](docs/detailed-design.md)
+
+排查 LLVM pass 引入的问题时，可以对后续 `opt`/`clang` 流程使用
+`-mllvm -print-changed`；本项目也会在输出前运行 LLVM verifier，尽量把坏 IR
+截在编译器内部。
