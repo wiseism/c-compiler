@@ -16,7 +16,8 @@ namespace lumen {
 namespace {
 
 struct FunctionSignature {
-    std::size_t arity;
+    TypePtr returnType;
+    std::vector<TypePtr> parameterTypes;
     bool hasDefinition = false;
 };
 
@@ -29,6 +30,8 @@ struct CodeGenerator::Impl {
     std::string moduleIR;
     std::string errorMessage;
     std::unordered_map<std::string, FunctionSignature> functions;
+    std::unordered_map<std::string, const GlobalVar*> globals;
+    std::vector<std::string> globalOrder;
 
     std::ostringstream body;
     std::ostringstream allocas;
@@ -74,7 +77,7 @@ struct CodeGenerator::Impl {
             const auto found = scope->find(name);
             if (found != scope->end()) return found->second;
         }
-        return {};
+        return globals.count(name) ? "@" + name : std::string();
     }
 
     std::string toBool(const std::string& value) {
@@ -186,9 +189,10 @@ struct CodeGenerator::Impl {
             if (function == functions.end()) {
                 return failExpr(expr.line, "unknown function '" + call->callee + "'");
             }
-            if (function->second.arity != call->args.size()) {
+            if (function->second.parameterTypes.size() != call->args.size()) {
                 return failExpr(expr.line, "function '" + call->callee + "' expects " +
-                                std::to_string(function->second.arity) + " argument(s), got " +
+                                std::to_string(function->second.parameterTypes.size()) +
+                                " argument(s), got " +
                                 std::to_string(call->args.size()));
             }
             std::string arguments;
@@ -197,6 +201,10 @@ struct CodeGenerator::Impl {
                 if (value.empty()) return {};
                 if (i != 0) arguments += ", ";
                 arguments += "i32 " + value;
+            }
+            if (function->second.returnType->kind() == TypeKind::Void) {
+                instruction("call void @" + call->callee + "(" + arguments + ")");
+                return "void";
             }
             const std::string result = temporary();
             instruction(result + " = call i32 @" + call->callee + "(" + arguments + ")");
@@ -247,6 +255,11 @@ struct CodeGenerator::Impl {
             return true;
         }
         if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&stmt)) {
+            if (!returnStmt->value) {
+                instruction("ret void");
+                terminated = true;
+                return true;
+            }
             const std::string value = emitExpr(*returnStmt->value);
             if (value.empty()) return false;
             instruction("ret i32 " + value);
@@ -307,10 +320,15 @@ struct CodeGenerator::Impl {
         return fail(stmt.line, "internal error: unknown statement node");
     }
 
-    bool registerFunction(const std::string& name, std::size_t arity,
+    bool registerFunction(const TypePtr& returnType, const std::string& name,
+                          const std::vector<Parameter>& params,
                           bool definition, int line) {
-        auto [position, inserted] = functions.emplace(name, FunctionSignature{arity, false});
-        if (!inserted && position->second.arity != arity) {
+        std::vector<TypePtr> parameterTypes;
+        for (const auto& parameter : params) parameterTypes.push_back(parameter.type);
+        auto [position, inserted] = functions.emplace(
+            name, FunctionSignature{returnType, parameterTypes, false});
+        if (!inserted && (position->second.parameterTypes.size() != params.size() ||
+                          !sameType(position->second.returnType, returnType))) {
             return fail(line, "conflicting declaration of function '" + name + "'");
         }
         if (definition) {
@@ -352,11 +370,13 @@ struct CodeGenerator::Impl {
 
         if (!emitBlock(*function.body, false)) return false;
         if (!terminated) {
-            return fail(function.line, "function '" + function.name +
-                                       "' may reach the end without returning");
+            if (function.returnType->kind() == TypeKind::Void) instruction("ret void");
+            else return fail(function.line, "function '" + function.name +
+                                           "' may reach the end without returning");
         }
 
-        output << "define i32 @" << function.name << '(' << parameters << ") {\nentry:\n"
+        output << "define " << (function.returnType->kind() == TypeKind::Void ? "void" : "i32")
+               << " @" << function.name << '(' << parameters << ") {\nentry:\n"
                << allocas.str() << body.str() << "}\n\n";
         return true;
     }
@@ -364,13 +384,18 @@ struct CodeGenerator::Impl {
     bool generate(const Program& program) {
         errorMessage.clear();
         functions.clear();
+        globals.clear();
+        globalOrder.clear();
         for (const auto& declaration : program.declarations) {
             if (const auto* prototype = dynamic_cast<const Prototype*>(declaration.get())) {
-                if (!registerFunction(prototype->name, prototype->params.size(), false,
-                                      prototype->line)) return false;
+                if (!registerFunction(prototype->returnType, prototype->name,
+                                      prototype->params, false, prototype->line)) return false;
             } else if (const auto* function = dynamic_cast<const Function*>(declaration.get())) {
-                if (!registerFunction(function->name, function->params.size(), true,
-                                      function->line)) return false;
+                if (!registerFunction(function->returnType, function->name,
+                                      function->params, true, function->line)) return false;
+            } else if (const auto* global = dynamic_cast<const GlobalVar*>(declaration.get())) {
+                if (!globals.count(global->name)) globalOrder.push_back(global->name);
+                if (!global->isExtern || !globals.count(global->name)) globals[global->name] = global;
             }
         }
 
@@ -380,7 +405,9 @@ struct CodeGenerator::Impl {
             const auto* prototype = dynamic_cast<const Prototype*>(declaration.get());
             if (!prototype || functions.at(prototype->name).hasDefinition ||
                 !emittedDeclarations.insert(prototype->name).second) continue;
-            declarations << "declare i32 @" << prototype->name << '(';
+            declarations << "declare "
+                         << (prototype->returnType->kind() == TypeKind::Void ? "void" : "i32")
+                         << " @" << prototype->name << '(';
             for (std::size_t i = 0; i < prototype->params.size(); ++i) {
                 if (i != 0) declarations << ", ";
                 declarations << "i32";
@@ -388,6 +415,21 @@ struct CodeGenerator::Impl {
             declarations << ")\n";
         }
         if (!emittedDeclarations.empty()) declarations << '\n';
+
+        std::ostringstream globalDefinitions;
+        for (const std::string& name : globalOrder) {
+            const GlobalVar* global = globals.at(name);
+            globalDefinitions << '@' << name << " = ";
+            if (global->isExtern) {
+                globalDefinitions << "external global i32\n";
+            } else {
+                const auto* initializer = dynamic_cast<const NumberExpr*>(global->init.get());
+                const std::int32_t value = initializer
+                    ? static_cast<std::int32_t>(static_cast<std::uint32_t>(initializer->value)) : 0;
+                globalDefinitions << "global i32 " << value << '\n';
+            }
+        }
+        if (!globalOrder.empty()) globalDefinitions << '\n';
 
         std::ostringstream definitions;
         for (const auto& declaration : program.declarations) {
@@ -398,7 +440,7 @@ struct CodeGenerator::Impl {
 
         std::ostringstream module;
         module << "; ModuleID = '" << moduleName << "'\n"
-               << declarations.str() << definitions.str();
+               << declarations.str() << globalDefinitions.str() << definitions.str();
         moduleIR = module.str();
         return true;
     }

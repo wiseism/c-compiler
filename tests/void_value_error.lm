@@ -1,0 +1,7 @@
+void no_value(void) {
+    return;
+}
+
+int main(void) {
+    return no_value();
+}

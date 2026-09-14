@@ -1,0 +1,24 @@
+extern int result;
+int result;
+int base = (2 + 3) * 4;
+
+void set_result(int value);
+
+int folded(void) {
+    return (1 + 2) * (8 - 1);
+}
+
+void tick(void) {
+    result = result + 1;
+    return;
+}
+
+void set_result(int value) {
+    result = value;
+}
+
+int main(void) {
+    set_result(base + folded() - 1);
+    tick();
+    return result + 1;
+}

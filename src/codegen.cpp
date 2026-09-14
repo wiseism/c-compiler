@@ -3,6 +3,7 @@
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -28,11 +29,16 @@ struct CodeGenerator::Impl {
     llvm::LLVMContext context;
     llvm::Module module;
     llvm::IRBuilder<> builder;
-    std::vector<std::unordered_map<std::string, llvm::AllocaInst*>> scopes;
+    std::vector<std::unordered_map<std::string, llvm::Value*>> scopes;
     std::unordered_set<std::string> definitions;
     std::string errorMessage;
 
     llvm::Type* intType() { return llvm::Type::getInt32Ty(context); }
+
+    llvm::Type* llvmType(const TypePtr& type) {
+        if (type->kind() == TypeKind::Void) return llvm::Type::getVoidTy(context);
+        return intType();
+    }
 
     bool fail(int line, const std::string& message) {
         if (errorMessage.empty()) {
@@ -52,19 +58,19 @@ struct CodeGenerator::Impl {
         return entryBuilder.CreateAlloca(intType(), nullptr, name);
     }
 
-    llvm::AllocaInst* lookup(const std::string& name) {
+    llvm::Value* lookup(const std::string& name) {
         for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
             const auto found = scope->find(name);
             if (found != scope->end()) return found->second;
         }
-        return nullptr;
+        return module.getNamedGlobal(name);
     }
 
     llvm::Value* asBool(llvm::Value* value) {
         return builder.CreateICmpNE(value, llvm::ConstantInt::get(intType(), 0), "truth");
     }
 
-    llvm::Function* declareFunction(const std::string& name,
+    llvm::Function* declareFunction(const TypePtr& returnType, const std::string& name,
                                     const std::vector<Parameter>& params, int line) {
         if (llvm::Function* existing = module.getFunction(name)) {
             if (existing->arg_size() != params.size()) {
@@ -74,13 +80,45 @@ struct CodeGenerator::Impl {
             return existing;
         }
 
-        std::vector<llvm::Type*> parameterTypes(params.size(), intType());
-        auto* type = llvm::FunctionType::get(intType(), parameterTypes, false);
+        std::vector<llvm::Type*> parameterTypes;
+        parameterTypes.reserve(params.size());
+        for (const auto& parameter : params) parameterTypes.push_back(llvmType(parameter.type));
+        auto* type = llvm::FunctionType::get(llvmType(returnType), parameterTypes, false);
         auto* function = llvm::Function::Create(type, llvm::Function::ExternalLinkage,
                                                 name, module);
         std::size_t index = 0;
         for (auto& argument : function->args()) argument.setName(params[index++].name);
         return function;
+    }
+
+    bool declareGlobal(const GlobalVar& global) {
+        llvm::GlobalVariable* variable = module.getNamedGlobal(global.name);
+        if (!variable) {
+            llvm::Constant* initializer = nullptr;
+            if (!global.isExtern) {
+                const auto* number = dynamic_cast<const NumberExpr*>(global.init.get());
+                initializer = number
+                    ? llvm::ConstantInt::get(intType(),
+                          static_cast<std::uint64_t>(number->value), true)
+                    : llvm::ConstantInt::get(intType(), 0);
+            }
+            new llvm::GlobalVariable(module, intType(), false,
+                                     llvm::GlobalValue::ExternalLinkage,
+                                     initializer, global.name);
+            return true;
+        }
+        if (!global.isExtern) {
+            if (variable->hasInitializer()) {
+                return fail(global.line, "redefinition of global variable '" + global.name + "'");
+            }
+            const auto* number = dynamic_cast<const NumberExpr*>(global.init.get());
+            llvm::Constant* initializer = number
+                ? llvm::ConstantInt::get(intType(),
+                      static_cast<std::uint64_t>(number->value), true)
+                : llvm::ConstantInt::get(intType(), 0);
+            variable->setInitializer(initializer);
+        }
+        return true;
     }
 
     llvm::Value* emitShortCircuit(const BinaryExpr& expr) {
@@ -116,12 +154,12 @@ struct CodeGenerator::Impl {
             return llvm::ConstantInt::get(intType(), static_cast<std::uint64_t>(number->value), true);
         }
         if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
-            llvm::AllocaInst* slot = lookup(variable->name);
+            llvm::Value* slot = lookup(variable->name);
             if (!slot) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
             return builder.CreateLoad(intType(), slot, variable->name);
         }
         if (const auto* assign = dynamic_cast<const AssignExpr*>(&expr)) {
-            llvm::AllocaInst* slot = lookup(assign->name);
+            llvm::Value* slot = lookup(assign->name);
             if (!slot) return failExpr(expr.line, "assignment to unknown variable '" + assign->name + "'");
             llvm::Value* value = emitExpr(*assign->value);
             if (!value) return nullptr;
@@ -178,7 +216,8 @@ struct CodeGenerator::Impl {
                 if (!value) return nullptr;
                 arguments.push_back(value);
             }
-            return builder.CreateCall(callee, arguments, "call");
+            return builder.CreateCall(callee, arguments,
+                                      callee->getReturnType()->isVoidTy() ? "" : "call");
         }
         return failExpr(expr.line, "internal error: unknown expression node");
     }
@@ -227,6 +266,10 @@ struct CodeGenerator::Impl {
             return true;
         }
         if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&stmt)) {
+            if (!returnStmt->value) {
+                builder.CreateRetVoid();
+                return true;
+            }
             llvm::Value* value = emitExpr(*returnStmt->value);
             if (!value) return false;
             builder.CreateRet(value);
@@ -306,7 +349,9 @@ struct CodeGenerator::Impl {
 
         if (!emitBlock(*astFunction.body, false)) return false;
         if (!builder.GetInsertBlock()->getTerminator()) {
-            return fail(astFunction.line, "function '" + astFunction.name + "' may reach the end without returning");
+            if (astFunction.returnType->kind() == TypeKind::Void) builder.CreateRetVoid();
+            else return fail(astFunction.line, "function '" + astFunction.name +
+                                               "' may reach the end without returning");
         }
 
         std::string verificationError;
@@ -322,9 +367,13 @@ struct CodeGenerator::Impl {
     bool generate(const Program& program) {
         for (const auto& declaration : program.declarations) {
             if (const auto* prototype = dynamic_cast<const Prototype*>(declaration.get())) {
-                if (!declareFunction(prototype->name, prototype->params, prototype->line)) return false;
+                if (!declareFunction(prototype->returnType, prototype->name,
+                                     prototype->params, prototype->line)) return false;
             } else if (const auto* function = dynamic_cast<const Function*>(declaration.get())) {
-                if (!declareFunction(function->name, function->params, function->line)) return false;
+                if (!declareFunction(function->returnType, function->name,
+                                     function->params, function->line)) return false;
+            } else if (const auto* global = dynamic_cast<const GlobalVar*>(declaration.get())) {
+                if (!declareGlobal(*global)) return false;
             }
         }
 

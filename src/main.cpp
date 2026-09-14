@@ -1,5 +1,6 @@
 #include "ast.hpp"
 #include "codegen.hpp"
+#include "constant_fold.hpp"
 #include "parser.hpp"
 #include "semantic.hpp"
 
@@ -76,6 +77,12 @@ int main(int argc, char** argv) {
     lumen::SemanticAnalyzer semanticAnalyzer;
     if (!semanticAnalyzer.analyze(*parsedProgram)) {
         std::cerr << "error: " << semanticAnalyzer.error() << '\n';
+        return 1;
+    }
+
+    lumen::ConstantFolder constantFolder;
+    if (!constantFolder.run(*parsedProgram)) {
+        std::cerr << "error: " << constantFolder.error() << '\n';
         return 1;
     }
 

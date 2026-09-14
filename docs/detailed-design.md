@@ -7,7 +7,7 @@
 标识符满足 `[A-Za-z_][A-Za-z0-9_]*`，整数文字由十进制数字组成。保留字为：
 
 ```text
-int extern if else while return
+int void extern if else while return
 ```
 
 双字符运算符 `== != <= >= && ||` 必须先于单字符规则匹配。其余标点和运算符为：
@@ -25,15 +25,18 @@ scanner 使用独立 `COMMENT` start condition，避免注释内容被普通 tok
 
 ```ebnf
 translation-unit ::= { external-declaration } ;
-external-declaration ::= function-definition | extern-declaration ;
-function-definition ::= "int" identifier "(" [ parameters ] ")" block ;
-extern-declaration ::= "extern" "int" identifier "(" [ parameters ] ")" ";" ;
-parameters ::= "int" identifier { "," "int" identifier } ;
+external-declaration ::= function-definition | function-declaration | global-declaration ;
+type ::= "int" | "void" ;
+function-definition ::= type identifier "(" [ parameters | "void" ] ")" block ;
+function-declaration ::= [ "extern" ] type identifier
+                         "(" [ parameters | "void" ] ")" ";" ;
+global-declaration ::= [ "extern" ] type identifier [ "=" expression ] ";" ;
+parameters ::= type identifier { "," type identifier } ;
 
 block ::= "{" { statement } "}" ;
 statement ::= block
-            | "int" identifier [ "=" expression ] ";"
-            | "return" expression ";"
+            | type identifier [ "=" expression ] ";"
+            | "return" [ expression ] ";"
             | "if" "(" expression ")" statement [ "else" statement ]
             | "while" "(" expression ")" statement
             | expression ";" ;
@@ -59,13 +62,14 @@ arguments ::= assignment { "," assignment } ;
 
 ### 1.3 类型和运行时语义
 
-- 所有变量、参数、函数返回值和表达式均为有符号 32 位整数。
+- 变量、合法参数和有值表达式为有符号 32 位整数；`void` 只允许作为函数返回类型。
 - `0` 为假，任何非零值为真；逻辑及比较表达式的结果规范化为 `0` 或 `1`。
 - 未提供初始化器的局部变量初始化为 `0`。
 - 加减乘按 LLVM `i32` 自然截断。
 - 除零、求余零及有符号除法溢出沿用 LLVM IR 的未定义行为。
 - `&&` 与 `||` 从左到右求值并短路；其他二元操作数按左到右生成。
-- 每个函数必须在所有生成路径上显式 `return`。
+- 非 `void` 函数必须在所有生成路径上显式 `return`；`void` 函数可自然结束。
+- 全局 initializer 必须能折叠为整数常量；不执行隐式运行时初始化。
 
 ## 2. AST 数据模型
 
@@ -90,6 +94,7 @@ Node
 │   └── WhileStmt
 └── TopLevel
     ├── Prototype
+    ├── GlobalVar
     └── Function
 ```
 
@@ -114,8 +119,8 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 
 `Type` 是不可变对象，当前建模 `Int32`、`Void`、`Pointer` 和 `Array` 四类。基础类型为
 进程内 canonical shared object，复合类型递归持有 element type。`equals()` 做结构
-等价比较，`toString()` 为诊断提供稳定的人类可读形式。当前语法只构造 `Int32`；其他
-类型对象将在对应语言特性接入时使用。
+等价比较，`toString()` 为诊断提供稳定的人类可读形式。当前语法构造 `Int32` 和
+`Void`；复合类型对象将在指针和数组语法接入时使用。
 
 ## 3. 驱动详细流程
 
@@ -126,9 +131,10 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 3. 调用 `yyparse()`；全局 `parsedProgram` 只在完整 translation unit 归约后赋值。
 4. 关闭输入文件；解析失败立即返回。
 5. 运行独立 `SemanticAnalyzer`，完成名字/类型/返回路径检查并标注表达式类型。
-6. 以输入文件名作为 LLVM module name 创建 `CodeGenerator`。
-7. 调用 `generate()`；错误通过 `error()` 返回，并统一加 `error:` 前缀。
-8. 根据 `-o` 调用 `writeIR()` 或 `printIR()`。
+6. 运行 `ConstantFolder`，折叠纯常量子树并验证全局 initializer。
+7. 以输入文件名作为 LLVM module name 创建 `CodeGenerator`。
+8. 调用 `generate()`；错误通过 `error()` 返回，并统一加 `error:` 前缀。
+9. 根据 `-o` 调用 `writeIR()` 或 `printIR()`。
 
 编译器一次进程只处理一个 translation unit，因此 scanner/parser 的进程级状态不会跨
 文件复用。
@@ -146,12 +152,15 @@ semantic pass 在解析完成、任何 LLVM 状态建立之前运行。第一遍
 
 ### 5.1 函数符号
 
-函数表记录名字和参数数量。顶层第一遍执行：
+函数表记录返回类型和完整参数类型序列。顶层第一遍执行：
 
 - 新名字：创建签名；
 - 同名同参数数量的重复 `extern`：允许；
 - 同名不同参数数量：报 conflicting declaration；
 - 第二个函数体：报 redefinition。
+
+普通原型与 `extern` 原型都只声明签名；若同一 translation unit 存在兼容函数体，IR
+只输出定义。函数和全局变量共享顶层名字空间。
 
 全部签名在第二遍函数体生成前可见，所以函数可以递归、互相调用或调用后定义函数。
 
@@ -167,7 +176,9 @@ semantic pass 在解析完成、任何 LLVM 状态建立之前运行。第一遍
 - initializer 在新名字加入 map 前生成，因此 `int x = x;` 引用外层 `x`，没有外层时
   报错。
 
-LLVM API 后端的符号值是 `AllocaInst*`，文本后端的符号值是 `%vN` 名字。
+查找局部作用域失败后继续查全局变量表，因此局部变量自然遮蔽同名全局。全局可有多个
+兼容 `extern` 声明，但只能有一个非 extern 定义。LLVM API 后端的符号值是
+`Value*`，文本后端的符号值是 `%vN` 或 `@global` 名字。
 
 ## 6. LLVM 类型和存储设计
 
@@ -176,15 +187,24 @@ LLVM API 后端的符号值是 `AllocaInst*`，文本后端的符号值是 `%vN`
 | 语言概念 | LLVM 表示 |
 | --- | --- |
 | `int` 值 | `i32` |
+| `void` 函数返回 | `void` |
 | 条件中间值 | `i1` |
 | 局部变量/参数 slot | `alloca i32` |
 | 函数 | `i32 (i32, ... )` |
+| 全局变量 | `@name = global i32 value` / `external global i32` |
 
 局部变量采用 alloca/load/store 形式，而不是在前端自行维护 SSA。LLVM API 后端把
 alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样放在 entry 顶部。
 后续 LLVM `mem2reg`/优化流水线可以将其提升为 SSA 寄存器。
 
 参数在 entry 中复制到 slot，使参数和局部变量共享完全相同的读取、赋值和遮蔽逻辑。
+
+### 6.1 常量折叠
+
+常量折叠在 typed AST 上递归运行。`+ - *` 使用 32 位无符号位模式计算，避免宿主 C++
+有符号溢出；`/ %` 在除零或 `INT32_MIN / -1` 时保留原表达式。比较和逻辑结果归一为
+0/1。`0 && rhs` 与非零 `lhs || rhs` 直接替换为常量且不要求访问 RHS，因此保持语言
+短路副作用。赋值与调用节点本身绝不折叠，只递归处理其子表达式。
 
 ## 7. 表达式生成
 
@@ -198,6 +218,9 @@ alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样�
 | 负号 | `sub i32 0, value` / `CreateNeg` |
 | 逻辑非 | `icmp eq value, 0` 后 `zext i1 to i32` |
 | 函数调用 | 校验函数存在及 arity 后 `call i32` |
+
+返回类型为 `void` 的调用生成 `call void`，仅允许作为 expression statement；semantic
+pass 会阻止它进入赋值、算术、条件或有值 return。
 
 ### 7.2 二元运算
 
@@ -259,8 +282,9 @@ while.body → while.cond       # body 未 return 时
 
 ### 8.4 return
 
-先生成返回表达式，再创建 `ret i32` 并标记 block terminated。函数体结束时当前 block
-仍未终止则报告 missing return。LLVM API 后端随后调用 `verifyFunction`。
+有值返回先生成表达式，再创建 `ret i32`；空返回创建 `ret void`。二者都会标记 block
+terminated。非 void 函数结束时当前 block 仍未终止则报告 missing return；void 函数
+自动补 `ret void`。LLVM API 后端随后调用 `verifyFunction`。
 
 ## 9. 双后端一致性
 

@@ -132,6 +132,17 @@ struct Prototype final : TopLevel {
     bool isExtern;
 };
 
+struct GlobalVar final : TopLevel {
+    GlobalVar(TypePtr type, std::string variableName, std::unique_ptr<Expr> initializer,
+              bool external, int sourceLine)
+        : TopLevel(sourceLine), declaredType(std::move(type)), name(std::move(variableName)),
+          init(std::move(initializer)), isExtern(external) {}
+    TypePtr declaredType;
+    std::string name;
+    std::unique_ptr<Expr> init;
+    bool isExtern;
+};
+
 struct Function final : TopLevel {
     Function(TypePtr resultType, std::string functionName,
              std::vector<Parameter> parameters, std::unique_ptr<BlockStmt> functionBody,

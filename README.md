@@ -6,16 +6,17 @@
 
 ## 已支持的语言
 
-- 唯一数据类型 `int`（32 位有符号整数）
-- 函数定义、递归、前向调用和 `extern` 函数声明
+- `int`（32 位有符号整数）以及函数返回类型 `void`
+- 函数定义、递归、前向调用、普通原型和 `extern` 声明
+- 定义型与 `extern` 全局变量，编译期常量 initializer
 - 局部变量、初始化、赋值及词法作用域
 - `+ - * / %`、比较、`!`，以及真正短路求值的 `&&` / `||`
 - `if` / `else`、`while`、代码块和 `return`
 - `//` 与 `/* ... */` 注释
 - 带源码行号的语法和语义诊断
 
-每个函数都必须显式 `return`。目前没有全局变量、指针、数组、浮点数和用户自定义
-类型；这些边界是语言设计的一部分，而不是偷偷按 C 语义处理。
+非 `void` 函数必须显式 `return`；`void` 函数允许自然结束。目前没有指针、数组、
+浮点数和用户自定义类型；这些边界是语言设计的一部分，而不是偷偷按 C 语义处理。
 
 ## 构建
 
@@ -76,6 +77,7 @@ src/parser.y      Bison 文法与 AST 构造
 include/ast.hpp   所有权明确的 AST
 include/type.hpp  显式、可组合的类型对象
 src/semantic.cpp  独立语义分析与 AST 类型标注
+src/constant_fold.cpp  保持短路语义的 AST 常量折叠
 src/codegen.cpp   LLVM C++ API IR 生成
 src/main.cpp      命令行驱动
 tests/e2e.sh      源码 → IR → 原生程序的端到端测试

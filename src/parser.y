@@ -43,9 +43,10 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
     std::vector<lumen::Stmt*>* stmts;
     std::vector<lumen::TopLevel*>* tops;
     std::vector<lumen::Parameter>* params;
+    lumen::TypePtr* type;
 }
 
-%token INT EXTERN IF ELSE WHILE RETURN
+%token INT VOID EXTERN IF ELSE WHILE RETURN
 %token EQ NE LE GE AND OR INVALID
 %token <number> NUMBER
 %token <text> IDENTIFIER
@@ -56,10 +57,12 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
 %type <block> block
 %type <stmts> statement_list
 %type <top> external_declaration function_definition extern_declaration
+%type <top> function_declaration global_declaration
 %type <tops> external_list
 %type <params> parameter_list parameter_list_opt
+%type <type> type_specifier
 
-%destructor { delete $$; } <text> <expr> <stmt> <block> <top> <params>
+%destructor { delete $$; } <text> <expr> <stmt> <block> <top> <params> <type>
 %destructor { for (auto* p : *$$) delete p; delete $$; } <exprs> <stmts> <tops>
 
 %precedence LOWER_THAN_ELSE
@@ -82,40 +85,83 @@ external_list
 
 external_declaration
     : function_definition { $$ = $1; }
+    | function_declaration { $$ = $1; }
     | extern_declaration   { $$ = $1; }
+    | global_declaration   { $$ = $1; }
     ;
 
 function_definition
-    : INT IDENTIFIER '(' parameter_list_opt ')' block {
-          $$ = new lumen::Function(lumen::Type::int32(), std::move(*$2), std::move(*$4),
+    : type_specifier IDENTIFIER '(' parameter_list_opt ')' block {
+          $$ = new lumen::Function(std::move(*$1), std::move(*$2), std::move(*$4),
                                    std::unique_ptr<lumen::BlockStmt>($6), @1.first_line);
+          delete $1;
           delete $2;
           delete $4;
       }
     ;
 
 extern_declaration
-    : EXTERN INT IDENTIFIER '(' parameter_list_opt ')' ';' {
-          $$ = new lumen::Prototype(lumen::Type::int32(), std::move(*$3),
+    : EXTERN type_specifier IDENTIFIER '(' parameter_list_opt ')' ';' {
+          $$ = new lumen::Prototype(std::move(*$2), std::move(*$3),
                                     std::move(*$5), true, @1.first_line);
+          delete $2;
           delete $3;
           delete $5;
       }
     ;
 
+function_declaration
+    : type_specifier IDENTIFIER '(' parameter_list_opt ')' ';' {
+          $$ = new lumen::Prototype(std::move(*$1), std::move(*$2),
+                                    std::move(*$4), false, @1.first_line);
+          delete $1;
+          delete $2;
+          delete $4;
+      }
+    ;
+
+global_declaration
+    : type_specifier IDENTIFIER ';' {
+          $$ = new lumen::GlobalVar(std::move(*$1), std::move(*$2), nullptr,
+                                    false, @1.first_line);
+          delete $1;
+          delete $2;
+      }
+    | type_specifier IDENTIFIER '=' expression ';' {
+          $$ = new lumen::GlobalVar(std::move(*$1), std::move(*$2),
+                                    std::unique_ptr<lumen::Expr>($4), false, @1.first_line);
+          delete $1;
+          delete $2;
+      }
+    | EXTERN type_specifier IDENTIFIER ';' {
+          $$ = new lumen::GlobalVar(std::move(*$2), std::move(*$3), nullptr,
+                                    true, @1.first_line);
+          delete $2;
+          delete $3;
+      }
+    ;
+
+type_specifier
+    : INT  { $$ = new lumen::TypePtr(lumen::Type::int32()); }
+    | VOID { $$ = new lumen::TypePtr(lumen::Type::voidType()); }
+    ;
+
 parameter_list_opt
     : %empty         { $$ = new std::vector<lumen::Parameter>(); }
+    | VOID           { $$ = new std::vector<lumen::Parameter>(); }
     | parameter_list { $$ = $1; }
     ;
 
 parameter_list
-    : INT IDENTIFIER {
+    : type_specifier IDENTIFIER {
           $$ = new std::vector<lumen::Parameter>();
-          $$->emplace_back(lumen::Type::int32(), std::move(*$2), @2.first_line);
+          $$->emplace_back(std::move(*$1), std::move(*$2), @2.first_line);
+          delete $1;
           delete $2;
       }
-    | parameter_list ',' INT IDENTIFIER {
-          $1->emplace_back(lumen::Type::int32(), std::move(*$4), @4.first_line);
+    | parameter_list ',' type_specifier IDENTIFIER {
+          $1->emplace_back(std::move(*$3), std::move(*$4), @4.first_line);
+          delete $3;
           delete $4;
           $$ = $1;
       }
@@ -140,20 +186,25 @@ statement
     ;
 
 variable_decl
-    : INT IDENTIFIER ';' {
-          $$ = new lumen::VarDeclStmt(lumen::Type::int32(), std::move(*$2),
+    : type_specifier IDENTIFIER ';' {
+          $$ = new lumen::VarDeclStmt(std::move(*$1), std::move(*$2),
                                       nullptr, @1.first_line);
+          delete $1;
           delete $2;
       }
-    | INT IDENTIFIER '=' expression ';' {
-          $$ = new lumen::VarDeclStmt(lumen::Type::int32(), std::move(*$2),
+    | type_specifier IDENTIFIER '=' expression ';' {
+          $$ = new lumen::VarDeclStmt(std::move(*$1), std::move(*$2),
                                       std::unique_ptr<lumen::Expr>($4), @1.first_line);
+          delete $1;
           delete $2;
       }
     ;
 
 return_stmt
-    : RETURN expression ';' {
+    : RETURN ';' {
+          $$ = new lumen::ReturnStmt(nullptr, @1.first_line);
+      }
+    | RETURN expression ';' {
           $$ = new lumen::ReturnStmt(std::unique_ptr<lumen::Expr>($2), @1.first_line);
       }
     ;

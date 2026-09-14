@@ -1,4 +1,5 @@
 #include "ast.hpp"
+#include "constant_fold.hpp"
 #include "semantic.hpp"
 #include "type.hpp"
 
@@ -29,5 +30,25 @@ int main() {
     SemanticAnalyzer analyzer;
     assert(analyzer.analyze(program));
     assert(sameType(numberNode->inferredType, Type::int32()));
+
+    auto product = std::make_unique<BinaryExpr>(
+        "*", std::make_unique<NumberExpr>(6, 1),
+        std::make_unique<NumberExpr>(7, 1), 1);
+    auto foldedReturn = std::make_unique<ReturnStmt>(std::move(product), 1);
+    ReturnStmt* foldedReturnNode = foldedReturn.get();
+    std::vector<std::unique_ptr<Stmt>> foldedStatements;
+    foldedStatements.push_back(std::move(foldedReturn));
+    auto foldedBlock = std::make_unique<BlockStmt>(std::move(foldedStatements), 1);
+    Program foldedProgram;
+    foldedProgram.declarations.push_back(std::make_unique<Function>(
+        Type::int32(), "folded", std::vector<Parameter>{}, std::move(foldedBlock), 1));
+    assert(analyzer.analyze(foldedProgram));
+
+    ConstantFolder folder;
+    assert(folder.run(foldedProgram));
+    const auto* foldedNumber = dynamic_cast<NumberExpr*>(foldedReturnNode->value.get());
+    assert(foldedNumber != nullptr);
+    assert(foldedNumber->value == 42);
+    assert(sameType(foldedNumber->inferredType, Type::int32()));
     return 0;
 }

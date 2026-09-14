@@ -1,0 +1,9 @@
+int make_value(void) {
+    return 42;
+}
+
+int global = make_value();
+
+int main(void) {
+    return global;
+}

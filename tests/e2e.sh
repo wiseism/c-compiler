@@ -80,3 +80,41 @@ if ! grep -q "duplicate parameter 'value'" "$output_dir/duplicate_parameter.txt"
     echo "duplicate-parameter diagnostic was not specific" >&2
     exit 1
 fi
+
+"$compiler" "$fixtures/void_globals_fold.lm" -o "$output_dir/void_globals_fold.ll" || exit 1
+"$clang" "$output_dir/void_globals_fold.ll" -o "$output_dir/void_globals_fold" || exit 1
+"$output_dir/void_globals_fold"
+feature_status=$?
+if [[ $feature_status -ne 42 ]]; then
+    echo "expected void/global/folding program exit status 42, got $feature_status" >&2
+    exit 1
+fi
+if ! grep -Eq '@base = .*global i32 20' "$output_dir/void_globals_fold.ll"; then
+    echo "global constant expression was not folded to 20" >&2
+    exit 1
+fi
+if ! grep -Eq 'ret i32 21' "$output_dir/void_globals_fold.ll"; then
+    echo "function constant expression was not folded to 21" >&2
+    exit 1
+fi
+
+if "$compiler" "$fixtures/void_value_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/void_value_error.txt"; then
+    echo "void value misuse unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "return requires 'int', got 'void'" "$output_dir/void_value_error.txt"; then
+    echo "void value diagnostic was not specific" >&2
+    exit 1
+fi
+
+if "$compiler" "$fixtures/nonconstant_global.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/nonconstant_global.txt"; then
+    echo "nonconstant global initializer unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "initializer for global 'global' is not a constant expression" \
+    "$output_dir/nonconstant_global.txt"; then
+    echo "nonconstant global diagnostic was not specific" >&2
+    exit 1
+fi

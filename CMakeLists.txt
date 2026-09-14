@@ -33,6 +33,7 @@ ADD_FLEX_BISON_DEPENDENCY(LumenLexer LumenParser)
 
 add_executable(lumenc
     src/main.cpp
+    src/constant_fold.cpp
     src/semantic.cpp
     ${LUMEN_CODEGEN_SOURCE}
     ${BISON_LumenParser_OUTPUTS}
@@ -66,6 +67,7 @@ if(BUILD_TESTING)
     find_program(CLANG_EXECUTABLE NAMES clang REQUIRED)
     add_executable(type_semantic_test
         tests/type_semantic_test.cpp
+        src/constant_fold.cpp
         src/semantic.cpp
     )
     target_include_directories(type_semantic_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

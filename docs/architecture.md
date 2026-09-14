@@ -29,7 +29,8 @@ flowchart LR
     Flex --> Bison[Bison Parser]
     Bison --> AST[所有权 AST]
     AST --> Semantic[独立语义分析与类型标注]
-    Semantic --> Select{LLVM SDK 可用?}
+    Semantic --> Fold[常量折叠]
+    Fold --> Select{LLVM SDK 可用?}
     Select -->|是| API[LLVM C++ API 后端]
     Select -->|否| Text[文本 LLVM IR 后端]
     API --> IR[.ll / stdout]
@@ -51,6 +52,7 @@ flowchart LR
 | 中间表示 | `include/ast.hpp` | 表达式、语句、顶层声明及其所有权模型 |
 | 类型系统 | `include/type.hpp` | 显式类型对象、结构等价与类型格式化 |
 | 语义层 | `src/semantic.cpp` | 名字解析、签名/类型/返回路径检查、AST 类型标注 |
+| 优化层 | `src/constant_fold.cpp` | AST 常量折叠、全局常量 initializer 验证 |
 | 后端接口 | `include/codegen.hpp` | 隐藏具体 LLVM 实现的稳定 PImpl 边界 |
 | LLVM API 后端 | `src/codegen.cpp` | LLVM IRBuilder、控制流生成、LLVM verifier |
 | 文本 IR 后端 | `src/text_codegen.cpp` | SSA 临时值/标签管理、LLVM IR 序列化 |
@@ -82,8 +84,13 @@ Flex 负责最长匹配和关键字分类。Bison 负责：
 体。因此允许递归和定义顺序无关的前向调用。函数体分析期间维护词法作用域栈，并在
 使用点完成名字解析；每个表达式的结果类型写入 `Expr::inferredType`。
 
-所有语言值统一为 LLVM `i32`。比较结果和逻辑结果先产生 `i1`，再零扩展为 `i32`，
-保持语言层表达式类型一致。`&&`、`||` 通过基本块和 PHI 节点实现短路求值。
+整数语言值统一为 LLVM `i32`，`void` 只用于函数返回。比较结果和逻辑结果先产生
+`i1`，再零扩展为 `i32`，保持语言层表达式类型一致。`&&`、`||` 通过基本块和 PHI
+节点实现短路求值。
+
+语义成功后运行独立常量折叠 pass。它按 32 位位模式折叠纯算术、比较和逻辑表达式，
+保留除零/有符号除法溢出的运行时语义，并利用短路规则安全消除不可执行的 RHS。全局
+initializer 必须在该 pass 后成为单个整数常量。
 
 ### 5.4 后端选择
 
@@ -107,6 +114,7 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 6. 每个基本块最多有一个 terminator，函数所有可达路径必须显式返回。
 7. 逻辑运算右操作数只出现在条件可达的基本块中。
 8. 只有完整通过语义检查和 IR 验证的模块才允许写出。
+9. 全局变量只有一个定义，可有多个兼容声明；函数和全局变量共享顶层名字空间。
 
 ## 7. 错误处理策略
 
@@ -120,6 +128,7 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 | 参数数量不匹配 | semantic pass | `expects 1 argument(s), got 2` |
 | 重定义、冲突签名 | semantic pass 第一遍 | `redefinition of function` |
 | 控制流缺少返回 | semantic pass | `may reach the end without returning` |
+| 非恒定全局初始化 | constant-fold pass | `is not a constant expression` |
 | LLVM 结构不合法 | LLVM verifier | verifier 原始诊断 |
 
 当前节点保存起始行号，因此语法与语义错误均可关联源文件行。发生错误时停止生成，避免
@@ -153,10 +162,8 @@ LLVM API 与文本 IR 两种构建中运行。
 
 推荐按依赖顺序扩展：
 
-1. 为 AST 增加显式类型对象和独立 semantic analysis pass。
-2. 增加 `void`、函数原型、全局变量和常量折叠。
-3. 增加指针、数组和内存模型，同时明确越界与空指针语义。
-4. 将语义检查从两个后端抽到共享 typed IR，消除双实现漂移风险。
-5. 接入 LLVM PassBuilder、优化等级、目标机和对象文件输出。
-6. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
-7. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。
+1. 增加指针、数组和显式内存安全语义。
+2. 将后端降级为共享 typed IR 的纯 lowering，消除双实现漂移风险。
+3. 接入 LLVM PassBuilder、优化等级、目标机和对象文件输出。
+4. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
+5. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。

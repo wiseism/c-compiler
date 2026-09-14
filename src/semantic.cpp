@@ -19,6 +19,9 @@ struct FunctionInfo {
 
 struct SemanticAnalyzer::Impl {
     std::unordered_map<std::string, FunctionInfo> functions;
+    std::unordered_map<std::string, TypePtr> globals;
+    std::unordered_map<std::string, bool> topLevelIsFunction;
+    std::unordered_map<std::string, bool> globalDefinitions;
     std::vector<std::unordered_map<std::string, TypePtr>> scopes;
     TypePtr currentReturnType;
     std::string errorMessage;
@@ -40,7 +43,8 @@ struct SemanticAnalyzer::Impl {
             const auto found = scope->find(name);
             if (found != scope->end()) return found->second;
         }
-        return nullptr;
+        const auto global = globals.find(name);
+        return global == globals.end() ? nullptr : global->second;
     }
 
     bool expectType(const TypePtr& actual, const TypePtr& expected,
@@ -147,6 +151,9 @@ struct SemanticAnalyzer::Impl {
         }
         if (auto* declaration = dynamic_cast<VarDeclStmt*>(&stmt)) {
             auto& currentScope = scopes.back();
+            if (declaration->declaredType->kind() == TypeKind::Void) {
+                return fail(stmt.line, "variable '" + declaration->name + "' cannot have type void");
+            }
             if (currentScope.count(declaration->name)) {
                 return fail(stmt.line, "redeclaration of variable '" + declaration->name + "'");
             }
@@ -163,11 +170,17 @@ struct SemanticAnalyzer::Impl {
             return true;
         }
         if (auto* returnStmt = dynamic_cast<ReturnStmt*>(&stmt)) {
-            TypePtr value = analyzeExpr(*returnStmt->value);
-            if (!value) return false;
-            if (!sameType(currentReturnType, value)) {
-                return fail(stmt.line, "return requires '" + currentReturnType->toString() +
-                                       "', got '" + value->toString() + "'");
+            if (!returnStmt->value) {
+                if (currentReturnType->kind() != TypeKind::Void) {
+                    return fail(stmt.line, "non-void function must return a value");
+                }
+            } else {
+                TypePtr value = analyzeExpr(*returnStmt->value);
+                if (!value) return false;
+                if (!sameType(currentReturnType, value)) {
+                    return fail(stmt.line, "return requires '" + currentReturnType->toString() +
+                                           "', got '" + value->toString() + "'");
+                }
             }
             definitelyReturns = true;
             return true;
@@ -195,6 +208,11 @@ struct SemanticAnalyzer::Impl {
 
     bool registerFunction(const std::string& name, const TypePtr& returnType,
                           const std::vector<Parameter>& params, bool definition, int line) {
+        const auto kind = topLevelIsFunction.find(name);
+        if (kind != topLevelIsFunction.end() && !kind->second) {
+            return fail(line, "'" + name + "' is already declared as a global variable");
+        }
+        topLevelIsFunction[name] = true;
         std::vector<TypePtr> parameterTypes;
         parameterTypes.reserve(params.size());
         for (const auto& parameter : params) parameterTypes.push_back(parameter.type);
@@ -219,11 +237,52 @@ struct SemanticAnalyzer::Impl {
         return true;
     }
 
+    bool registerGlobal(const GlobalVar& global) {
+        if (global.declaredType->kind() == TypeKind::Void) {
+            return fail(global.line, "variable '" + global.name + "' cannot have type void");
+        }
+        const auto kind = topLevelIsFunction.find(global.name);
+        if (kind != topLevelIsFunction.end() && kind->second) {
+            return fail(global.line, "'" + global.name + "' is already declared as a function");
+        }
+        topLevelIsFunction[global.name] = false;
+
+        const auto existing = globals.find(global.name);
+        if (existing != globals.end() && !sameType(existing->second, global.declaredType)) {
+            return fail(global.line, "conflicting declaration of global variable '" +
+                                     global.name + "'");
+        }
+        globals[global.name] = global.declaredType;
+        if (!global.isExtern) {
+            if (globalDefinitions[global.name]) {
+                return fail(global.line, "redefinition of global variable '" + global.name + "'");
+            }
+            globalDefinitions[global.name] = true;
+        }
+        return true;
+    }
+
+    bool analyzeGlobal(GlobalVar& global) {
+        if (!global.init) return true;
+        TypePtr initializer = analyzeExpr(*global.init);
+        if (!initializer) return false;
+        if (!sameType(global.declaredType, initializer)) {
+            return fail(global.line, "cannot initialize global '" + global.name +
+                                     "' of type '" + global.declaredType->toString() +
+                                     "' with '" + initializer->toString() + "'");
+        }
+        return true;
+    }
+
     bool analyzeFunction(Function& function) {
         scopes.clear();
         scopes.emplace_back();
         currentReturnType = function.returnType;
         for (const auto& parameter : function.params) {
+            if (parameter.type->kind() == TypeKind::Void) {
+                return fail(parameter.line, "parameter '" + parameter.name +
+                                            "' cannot have type void");
+            }
             if (scopes.back().count(parameter.name)) {
                 return fail(parameter.line, "duplicate parameter '" + parameter.name + "'");
             }
@@ -232,7 +291,7 @@ struct SemanticAnalyzer::Impl {
 
         bool definitelyReturns = false;
         if (!analyzeBlock(*function.body, false, definitelyReturns)) return false;
-        if (!definitelyReturns) {
+        if (function.returnType->kind() != TypeKind::Void && !definitelyReturns) {
             return fail(function.line, "function '" + function.name +
                                        "' may reach the end without returning");
         }
@@ -242,6 +301,9 @@ struct SemanticAnalyzer::Impl {
     bool analyze(Program& program) {
         errorMessage.clear();
         functions.clear();
+        globals.clear();
+        topLevelIsFunction.clear();
+        globalDefinitions.clear();
         for (auto& declaration : program.declarations) {
             if (auto* prototype = dynamic_cast<Prototype*>(declaration.get())) {
                 if (!registerFunction(prototype->name, prototype->returnType, prototype->params,
@@ -249,13 +311,17 @@ struct SemanticAnalyzer::Impl {
             } else if (auto* function = dynamic_cast<Function*>(declaration.get())) {
                 if (!registerFunction(function->name, function->returnType, function->params,
                                       true, function->line)) return false;
+            } else if (auto* global = dynamic_cast<GlobalVar*>(declaration.get())) {
+                if (!registerGlobal(*global)) return false;
             } else {
                 return fail(declaration->line, "internal error: unknown top-level node");
             }
         }
 
         for (auto& declaration : program.declarations) {
-            if (auto* function = dynamic_cast<Function*>(declaration.get())) {
+            if (auto* global = dynamic_cast<GlobalVar*>(declaration.get())) {
+                if (!analyzeGlobal(*global)) return false;
+            } else if (auto* function = dynamic_cast<Function*>(declaration.get())) {
                 if (!analyzeFunction(*function)) return false;
             }
         }

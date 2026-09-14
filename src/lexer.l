@@ -24,6 +24,7 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 <COMMENT><<EOF>>          return INVALID;
 
 "int"                     return INT;
+"void"                    return VOID;
 "extern"                  return EXTERN;
 "if"                      return IF;
 "else"                    return ELSE;
