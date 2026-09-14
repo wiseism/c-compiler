@@ -65,7 +65,7 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Function* declareFunction(const std::string& name,
-                                    const std::vector<std::string>& params, int line) {
+                                    const std::vector<Parameter>& params, int line) {
         if (llvm::Function* existing = module.getFunction(name)) {
             if (existing->arg_size() != params.size()) {
                 fail(line, "conflicting declaration of function '" + name + "'");
@@ -79,7 +79,7 @@ struct CodeGenerator::Impl {
         auto* function = llvm::Function::Create(type, llvm::Function::ExternalLinkage,
                                                 name, module);
         std::size_t index = 0;
-        for (auto& argument : function->args()) argument.setName(params[index++]);
+        for (auto& argument : function->args()) argument.setName(params[index++].name);
         return function;
     }
 
@@ -294,7 +294,7 @@ struct CodeGenerator::Impl {
 
         std::size_t index = 0;
         for (auto& argument : function->args()) {
-            const std::string& parameterName = astFunction.params[index++];
+            const std::string& parameterName = astFunction.params[index++].name;
             if (scopes.back().count(parameterName)) {
                 return fail(astFunction.line, "duplicate parameter '" + parameterName + "'");
             }

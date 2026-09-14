@@ -74,7 +74,9 @@ int main() {
 src/lexer.l       Flex 词法规则
 src/parser.y      Bison 文法与 AST 构造
 include/ast.hpp   所有权明确的 AST
-src/codegen.cpp   语义检查与 LLVM IR 生成
+include/type.hpp  显式、可组合的类型对象
+src/semantic.cpp  独立语义分析与 AST 类型标注
+src/codegen.cpp   LLVM C++ API IR 生成
 src/main.cpp      命令行驱动
 tests/e2e.sh      源码 → IR → 原生程序的端到端测试
 ```

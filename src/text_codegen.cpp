@@ -337,7 +337,7 @@ struct CodeGenerator::Impl {
 
         std::string parameters;
         for (std::size_t i = 0; i < function.params.size(); ++i) {
-            const std::string& name = function.params[i];
+            const std::string& name = function.params[i].name;
             if (scopes.back().count(name)) {
                 return fail(function.line, "duplicate parameter '" + name + "'");
             }

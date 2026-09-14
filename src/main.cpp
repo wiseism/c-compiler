@@ -1,6 +1,7 @@
 #include "ast.hpp"
 #include "codegen.hpp"
 #include "parser.hpp"
+#include "semantic.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -69,6 +70,12 @@ int main(int argc, char** argv) {
     const int parseResult = yyparse();
     std::fclose(input);
     if (parseResult != 0 || !parsedProgram) {
+        return 1;
+    }
+
+    lumen::SemanticAnalyzer semanticAnalyzer;
+    if (!semanticAnalyzer.analyze(*parsedProgram)) {
+        std::cerr << "error: " << semanticAnalyzer.error() << '\n';
         return 1;
     }
 

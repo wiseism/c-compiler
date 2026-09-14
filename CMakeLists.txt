@@ -33,6 +33,7 @@ ADD_FLEX_BISON_DEPENDENCY(LumenLexer LumenParser)
 
 add_executable(lumenc
     src/main.cpp
+    src/semantic.cpp
     ${LUMEN_CODEGEN_SOURCE}
     ${BISON_LumenParser_OUTPUTS}
     ${FLEX_LumenLexer_OUTPUTS}
@@ -63,6 +64,18 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     find_program(CLANG_EXECUTABLE NAMES clang REQUIRED)
+    add_executable(type_semantic_test
+        tests/type_semantic_test.cpp
+        src/semantic.cpp
+    )
+    target_include_directories(type_semantic_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(type_semantic_test PRIVATE /W4)
+    else()
+        target_compile_options(type_semantic_test PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME type_semantic COMMAND type_semantic_test)
+
     add_test(
         NAME compiler_e2e
         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e.sh

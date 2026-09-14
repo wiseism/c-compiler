@@ -28,7 +28,7 @@ flowchart LR
     Driver --> Flex[Flex Scanner]
     Flex --> Bison[Bison Parser]
     Bison --> AST[所有权 AST]
-    AST --> Semantic[语义检查]
+    AST --> Semantic[独立语义分析与类型标注]
     Semantic --> Select{LLVM SDK 可用?}
     Select -->|是| API[LLVM C++ API 后端]
     Select -->|否| Text[文本 LLVM IR 后端]
@@ -49,9 +49,11 @@ flowchart LR
 | 词法层 | `src/lexer.l` | 字符流到 token、注释和行号维护 |
 | 语法层 | `src/parser.y` | token 到 AST、运算符优先级、错误恢复入口 |
 | 中间表示 | `include/ast.hpp` | 表达式、语句、顶层声明及其所有权模型 |
+| 类型系统 | `include/type.hpp` | 显式类型对象、结构等价与类型格式化 |
+| 语义层 | `src/semantic.cpp` | 名字解析、签名/类型/返回路径检查、AST 类型标注 |
 | 后端接口 | `include/codegen.hpp` | 隐藏具体 LLVM 实现的稳定 PImpl 边界 |
-| LLVM API 后端 | `src/codegen.cpp` | 语义检查、LLVM IRBuilder、LLVM verifier |
-| 文本 IR 后端 | `src/text_codegen.cpp` | 语义检查、SSA 临时值/标签管理、LLVM IR 序列化 |
+| LLVM API 后端 | `src/codegen.cpp` | LLVM IRBuilder、控制流生成、LLVM verifier |
+| 文本 IR 后端 | `src/text_codegen.cpp` | SSA 临时值/标签管理、LLVM IR 序列化 |
 | 构建与验证 | `CMakeLists.txt`, `tests/` | 代码生成、后端选择、源码到原生程序的闭环测试 |
 
 ## 5. 编译流水线
@@ -76,8 +78,9 @@ Flex 负责最长匹配和关键字分类。Bison 负责：
 
 ### 5.3 语义与 IR 阶段
 
-后端采用两遍顶层处理：第一遍登记全部函数签名，第二遍生成函数体。因此允许递归和
-定义顺序无关的前向调用。函数体生成期间维护词法作用域栈，并在使用点完成名字解析。
+独立 `SemanticAnalyzer` 采用两遍顶层处理：第一遍登记全部函数签名，第二遍检查函数
+体。因此允许递归和定义顺序无关的前向调用。函数体分析期间维护词法作用域栈，并在
+使用点完成名字解析；每个表达式的结果类型写入 `Expr::inferredType`。
 
 所有语言值统一为 LLVM `i32`。比较结果和逻辑结果先产生 `i1`，再零扩展为 `i32`，
 保持语言层表达式类型一致。`&&`、`||` 通过基本块和 PHI 节点实现短路求值。
@@ -98,7 +101,7 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 
 1. AST 子节点一旦进入父节点，就由 `std::unique_ptr` 唯一拥有。
 2. 成功解析后，Bison 语义栈不再拥有已经迁移进 AST 的对象。
-3. 每个函数签名在生成任何函数体前已登记。
+3. 进入后端前每个函数签名已登记，所有表达式已有显式推导类型。
 4. 同一词法作用域不能重复声明变量；内层作用域可以遮蔽外层变量。
 5. 读取或赋值变量前必须成功完成名字解析。
 6. 每个基本块最多有一个 terminator，函数所有可达路径必须显式返回。
@@ -113,10 +116,10 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 | --- | --- | --- |
 | 非法字符、未闭合注释 | scanner/parser | `unexpected INVALID` |
 | 缺少分号、括号不匹配 | Bison | detailed syntax error |
-| 未定义变量或函数 | codegen | `unknown variable 'x'` |
-| 参数数量不匹配 | codegen | `expects 1 argument(s), got 2` |
-| 重定义、冲突签名 | codegen 第一遍 | `redefinition of function` |
-| 控制流缺少返回 | 函数生成末尾 | `may reach the end without returning` |
+| 未定义变量或函数 | semantic pass | `unknown variable 'x'` |
+| 参数数量不匹配 | semantic pass | `expects 1 argument(s), got 2` |
+| 重定义、冲突签名 | semantic pass 第一遍 | `redefinition of function` |
+| 控制流缺少返回 | semantic pass | `may reach the end without returning` |
 | LLVM 结构不合法 | LLVM verifier | verifier 原始诊断 |
 
 当前节点保存起始行号，因此语法与语义错误均可关联源文件行。发生错误时停止生成，避免

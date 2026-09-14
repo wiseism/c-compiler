@@ -69,7 +69,8 @@ arguments ::= assignment { "," assignment } ;
 
 ## 2. AST 数据模型
 
-所有 AST 节点继承 `Node`，共享 `line` 字段和虚析构函数。节点族如下：
+所有 AST 节点继承 `Node`，共享 `line` 字段和虚析构函数。`Expr` 额外持有由 semantic
+pass 写入的 `inferredType`；变量、参数和函数均直接持有显式声明类型。节点族如下：
 
 ```text
 Node
@@ -109,6 +110,13 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 
 这套协议确保正常归约和错误弹栈两条路径都只有一个 owner。
 
+### 2.2 显式类型对象
+
+`Type` 是不可变对象，当前建模 `Int32`、`Void`、`Pointer` 和 `Array` 四类。基础类型为
+进程内 canonical shared object，复合类型递归持有 element type。`equals()` 做结构
+等价比较，`toString()` 为诊断提供稳定的人类可读形式。当前语法只构造 `Int32`；其他
+类型对象将在对应语言特性接入时使用。
+
 ## 3. 驱动详细流程
 
 `main` 按以下顺序执行：
@@ -117,16 +125,26 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 2. 使用 `fopen` 打开输入，设置 `yyin`，重置 `yylineno` 和 scanner buffer。
 3. 调用 `yyparse()`；全局 `parsedProgram` 只在完整 translation unit 归约后赋值。
 4. 关闭输入文件；解析失败立即返回。
-5. 以输入文件名作为 LLVM module name 创建 `CodeGenerator`。
-6. 调用 `generate()`；错误通过 `error()` 返回，并统一加 `error:` 前缀。
-7. 根据 `-o` 调用 `writeIR()` 或 `printIR()`。
+5. 运行独立 `SemanticAnalyzer`，完成名字/类型/返回路径检查并标注表达式类型。
+6. 以输入文件名作为 LLVM module name 创建 `CodeGenerator`。
+7. 调用 `generate()`；错误通过 `error()` 返回，并统一加 `error:` 前缀。
+8. 根据 `-o` 调用 `writeIR()` 或 `printIR()`。
 
 编译器一次进程只处理一个 translation unit，因此 scanner/parser 的进程级状态不会跨
 文件复用。
 
-## 4. 名字与作用域
+## 4. Semantic Analysis Pass
 
-### 4.1 函数符号
+semantic pass 在解析完成、任何 LLVM 状态建立之前运行。第一遍登记函数返回类型和完整
+参数类型序列；第二遍以递归 visitor 检查函数体。表达式 visitor 返回 `TypePtr` 并同时
+写入节点的 `inferredType`。声明 initializer、赋值、调用实参、条件和 return 都执行
+显式类型等价检查。函数体 visitor 还计算保守的 `definitelyReturns` 属性：只有直接
+`return` 或 then/else 均确定返回的 `if` 才能证明返回；`while` 暂不因常量条件被视为
+确定返回。
+
+## 5. 名字与作用域
+
+### 5.1 函数符号
 
 函数表记录名字和参数数量。顶层第一遍执行：
 
@@ -137,7 +155,7 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 
 全部签名在第二遍函数体生成前可见，所以函数可以递归、互相调用或调用后定义函数。
 
-### 4.2 局部符号
+### 5.2 局部符号
 
 作用域表示为从外到内排列的 map 栈。查询从栈尾向栈首进行，得到最近声明。规则如下：
 
@@ -151,7 +169,7 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 
 LLVM API 后端的符号值是 `AllocaInst*`，文本后端的符号值是 `%vN` 名字。
 
-## 5. LLVM 类型和存储设计
+## 6. LLVM 类型和存储设计
 
 当前语言只有一种值类型：
 
@@ -168,9 +186,9 @@ alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样�
 
 参数在 entry 中复制到 slot，使参数和局部变量共享完全相同的读取、赋值和遮蔽逻辑。
 
-## 6. 表达式生成
+## 7. 表达式生成
 
-### 6.1 基础表达式
+### 7.1 基础表达式
 
 | AST | LLVM IR 形态 |
 | --- | --- |
@@ -181,7 +199,7 @@ alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样�
 | 逻辑非 | `icmp eq value, 0` 后 `zext i1 to i32` |
 | 函数调用 | 校验函数存在及 arity 后 `call i32` |
 
-### 6.2 二元运算
+### 7.2 二元运算
 
 算术映射为 `add/sub/mul/sdiv/srem`。比较映射为有符号 `icmp`：
 
@@ -193,7 +211,7 @@ alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样�
 
 比较得到 `i1`，立即 `zext` 为语言层 `i32`。
 
-### 6.3 短路逻辑
+### 7.3 短路逻辑
 
 `lhs && rhs` 的控制流：
 
@@ -213,20 +231,20 @@ merge-block:
 当前基本块”而不是假定它仍是最初 rhs block，因为嵌套逻辑表达式会在 RHS 内继续拆分
 基本块。
 
-## 7. 语句与控制流生成
+## 8. 语句与控制流生成
 
-### 7.1 代码块和终止状态
+### 8.1 代码块和终止状态
 
 后端跟踪当前 insertion block 是否已经存在 terminator。遇到 `return` 或无后继的
 结构后，跳过同一 block 中的后续不可达语句，防止在 terminator 后插入指令。
 
-### 7.2 if/else
+### 8.2 if/else
 
 生成 `if.then`、可选 `if.else` 和 `if.end`。每个仍可下落的分支补一条到 merge block
 的无条件跳转。当 then/else 都终止时，merge block 以 `unreachable` 终止，使 IR 保持
 结构完整，同时将后续语句标记为不可达。
 
-### 7.3 while
+### 8.3 while
 
 生成三个 block：
 
@@ -239,12 +257,12 @@ while.body → while.cond       # body 未 return 时
 生成完循环后 insertion point 位于 `while.end`，因为当前静态分析不证明常量条件导致
 循环永不退出。
 
-### 7.4 return
+### 8.4 return
 
 先生成返回表达式，再创建 `ret i32` 并标记 block terminated。函数体结束时当前 block
 仍未终止则报告 missing return。LLVM API 后端随后调用 `verifyFunction`。
 
-## 8. 双后端一致性
+## 9. 双后端一致性
 
 `include/codegen.hpp` 使用 PImpl 隔离 LLVM 头文件，两个实现提供完全相同的方法：
 
@@ -261,7 +279,7 @@ API 后端直接持有 `LLVMContext`、`Module` 和 `IRBuilder`；文本后端�
 已知维护风险是两份实现同时包含语义检查逻辑。任何语言扩展必须同步修改两端并让 CI
 分别运行相同测试；长期方案是抽取共享 semantic pass 和自有 typed IR。
 
-## 9. 构建系统
+## 10. 构建系统
 
 CMake 的生成依赖为：
 
@@ -275,7 +293,7 @@ parser.hpp -------------> lexer.cpp
 目录和 binary 目录都加入 include path。找到 LLVM 时链接 `core`、`support` 组件；
 没有找到时不引入任何 LLVM headers 或 libraries。
 
-## 10. 测试设计
+## 11. 测试设计
 
 `tests/e2e.sh` 接受 compiler、clang、fixture 目录和输出目录四个参数。测试分为：
 
@@ -288,7 +306,7 @@ parser.hpp -------------> lexer.cpp
 CTest 通过 `$<TARGET_FILE:lumenc>` 传入实际构建产物，避免依赖 PATH。CI 为 LLVM API
 和 fallback 建立不同 build directory，防止 CMake cache 让后端选择结果互相污染。
 
-## 11. CI 设计
+## 12. CI 设计
 
 `.github/workflows/ci.yml` 在 push、pull request 和手工触发时运行两个 Linux job：
 
@@ -299,22 +317,22 @@ CTest 通过 `$<TARGET_FILE:lumenc>` 传入实际构建产物，避免依赖 PAT
 两个 job 均执行 configure、build 和 `ctest --output-on-failure`。这既验证行为，也验证
 Flex/Bison 生成代码能在干净环境从零构建。
 
-## 12. 调试手册
+## 13. 调试手册
 
-### 12.1 前端崩溃
+### 13.1 前端崩溃
 
 1. 使用最小 `.lm` 重现并先单独运行 `bison -Wall -Wcounterexamples`。
 2. 用 ASan/UBSan 构建，检查 parser error path 的 `%destructor` 和 action 中的所有权转移。
 3. 检查 scanner 返回的 token 是否携带了正确 `%union` 成员。
 
-### 12.2 LLVM verifier 失败
+### 13.2 LLVM verifier 失败
 
 1. 保存未优化 `.ll`，运行 `opt -verify -disable-output input.ll`。
 2. 检查每个 basic block 是否恰有一个 terminator。
 3. 检查 PHI predecessor 是否与 CFG 完全一致。
 4. 检查 load/store 指针元素类型和 call 参数数量。
 
-### 12.3 优化 pass 后失败
+### 13.3 优化 pass 后失败
 
 1. 先证明 `-O0` IR 通过 verifier 并能执行。
 2. 用 `opt -O1/-O2` 确认首次失败优化等级。

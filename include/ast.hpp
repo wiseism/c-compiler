@@ -1,5 +1,7 @@
 #pragma once
 
+#include "type.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -14,7 +16,10 @@ struct Node {
     int line;
 };
 
-struct Expr : Node { using Node::Node; };
+struct Expr : Node {
+    using Node::Node;
+    TypePtr inferredType;
+};
 
 struct NumberExpr final : Expr {
     NumberExpr(std::int64_t number, int sourceLine) : Expr(sourceLine), value(number) {}
@@ -74,8 +79,11 @@ struct ExprStmt final : Stmt {
 };
 
 struct VarDeclStmt final : Stmt {
-    VarDeclStmt(std::string variableName, std::unique_ptr<Expr> initializer, int sourceLine)
-        : Stmt(sourceLine), name(std::move(variableName)), init(std::move(initializer)) {}
+    VarDeclStmt(TypePtr type, std::string variableName,
+                std::unique_ptr<Expr> initializer, int sourceLine)
+        : Stmt(sourceLine), declaredType(std::move(type)), name(std::move(variableName)),
+          init(std::move(initializer)) {}
+    TypePtr declaredType;
     std::string name;
     std::unique_ptr<Expr> init;
 };
@@ -105,23 +113,34 @@ struct WhileStmt final : Stmt {
 
 struct TopLevel : Node { using Node::Node; };
 
-struct Prototype final : TopLevel {
-    Prototype(std::string functionName, std::vector<std::string> parameters,
-              bool external, int sourceLine)
-        : TopLevel(sourceLine), name(std::move(functionName)), params(std::move(parameters)),
-          isExtern(external) {}
+struct Parameter {
+    Parameter(TypePtr parameterType, std::string parameterName, int sourceLine)
+        : type(std::move(parameterType)), name(std::move(parameterName)), line(sourceLine) {}
+    TypePtr type;
     std::string name;
-    std::vector<std::string> params;
+    int line;
+};
+
+struct Prototype final : TopLevel {
+    Prototype(TypePtr resultType, std::string functionName,
+              std::vector<Parameter> parameters, bool external, int sourceLine)
+        : TopLevel(sourceLine), returnType(std::move(resultType)), name(std::move(functionName)),
+          params(std::move(parameters)), isExtern(external) {}
+    TypePtr returnType;
+    std::string name;
+    std::vector<Parameter> params;
     bool isExtern;
 };
 
 struct Function final : TopLevel {
-    Function(std::string functionName, std::vector<std::string> parameters,
-             std::unique_ptr<BlockStmt> functionBody, int sourceLine)
-        : TopLevel(sourceLine), name(std::move(functionName)), params(std::move(parameters)),
-          body(std::move(functionBody)) {}
+    Function(TypePtr resultType, std::string functionName,
+             std::vector<Parameter> parameters, std::unique_ptr<BlockStmt> functionBody,
+             int sourceLine)
+        : TopLevel(sourceLine), returnType(std::move(resultType)), name(std::move(functionName)),
+          params(std::move(parameters)), body(std::move(functionBody)) {}
+    TypePtr returnType;
     std::string name;
-    std::vector<std::string> params;
+    std::vector<Parameter> params;
     std::unique_ptr<BlockStmt> body;
 };
 

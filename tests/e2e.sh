@@ -70,3 +70,13 @@ if ! grep -q "may reach the end without returning" "$output_dir/missing_return.t
     echo "missing-return diagnostic was not specific" >&2
     exit 1
 fi
+
+if "$compiler" "$fixtures/duplicate_parameter.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/duplicate_parameter.txt"; then
+    echo "duplicate parameter unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "duplicate parameter 'value'" "$output_dir/duplicate_parameter.txt"; then
+    echo "duplicate-parameter diagnostic was not specific" >&2
+    exit 1
+fi
