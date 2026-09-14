@@ -41,6 +41,25 @@ struct CodeGenerator::Impl {
     int nextLabel = 0;
     std::string currentLabel;
     bool terminated = false;
+    bool usesTrap = false;
+
+    static std::string irType(const TypePtr& type) {
+        switch (type->kind()) {
+        case TypeKind::Int32:
+            return "i32";
+        case TypeKind::Void:
+            return "void";
+        case TypeKind::Pointer:
+            if (type->elementType()->kind() == TypeKind::Void) return "i8*";
+            return irType(type->elementType()) + "*";
+        case TypeKind::Array:
+            return "[" + std::to_string(type->arrayLength()) + " x " +
+                   irType(type->elementType()) + "]";
+        case TypeKind::NullPointer:
+            return "<unresolved-null>";
+        }
+        return "<invalid-type>";
+    }
 
     bool fail(int line, const std::string& message) {
         if (errorMessage.empty()) {
@@ -80,16 +99,51 @@ struct CodeGenerator::Impl {
         return globals.count(name) ? "@" + name : std::string();
     }
 
-    std::string toBool(const std::string& value) {
+    std::string toBool(const std::string& value, const TypePtr& type) {
         const std::string result = temporary();
-        instruction(result + " = icmp ne i32 " + value + ", 0");
+        if (isPointerType(type)) {
+            instruction(result + " = icmp ne " + irType(type) + " " + value + ", null");
+        } else {
+            instruction(result + " = icmp ne i32 " + value + ", 0");
+        }
         return result;
+    }
+
+    void emitTrapUnless(const std::string& condition, const std::string& stem) {
+        const std::string validLabel = labelName(stem + ".ok");
+        const std::string trapLabel = labelName(stem + ".trap");
+        instruction("br i1 " + condition + ", label %" + validLabel +
+                    ", label %" + trapLabel);
+        terminated = true;
+        emitLabel(trapLabel);
+        instruction("call void @llvm.trap()");
+        instruction("unreachable");
+        terminated = true;
+        emitLabel(validLabel);
+        usesTrap = true;
+    }
+
+    void emitNullCheck(const std::string& pointer, const TypePtr& type) {
+        const std::string condition = temporary();
+        instruction(condition + " = icmp ne " + irType(type) + " " + pointer + ", null");
+        emitTrapUnless(condition, "nullcheck");
+    }
+
+    void emitBoundsCheck(const std::string& index, std::size_t length) {
+        const std::string nonNegative = temporary();
+        instruction(nonNegative + " = icmp sge i32 " + index + ", 0");
+        const std::string inRange = temporary();
+        instruction(inRange + " = icmp slt i32 " + index + ", " +
+                    std::to_string(length));
+        const std::string valid = temporary();
+        instruction(valid + " = and i1 " + nonNegative + ", " + inRange);
+        emitTrapUnless(valid, "boundscheck");
     }
 
     std::string emitShortCircuit(const BinaryExpr& expr) {
         const std::string left = emitExpr(*expr.lhs);
         if (left.empty()) return {};
-        const std::string leftBool = toBool(left);
+        const std::string leftBool = toBool(left, expr.lhs->inferredType);
         const std::string leftPredecessor = currentLabel;
         const std::string rhsLabel = labelName("logic.rhs");
         const std::string mergeLabel = labelName("logic.end");
@@ -103,7 +157,7 @@ struct CodeGenerator::Impl {
         emitLabel(rhsLabel);
         const std::string right = emitExpr(*expr.rhs);
         if (right.empty()) return {};
-        const std::string rightBool = toBool(right);
+        const std::string rightBool = toBool(right, expr.rhs->inferredType);
         const std::string rightPredecessor = currentLabel;
         branch(mergeLabel);
 
@@ -117,29 +171,85 @@ struct CodeGenerator::Impl {
         return result;
     }
 
+    std::string emitAddress(const Expr& expr) {
+        if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
+            const std::string slot = lookup(variable->name);
+            if (slot.empty()) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            return slot;
+        }
+        if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            if (unary->op != "*") return failExpr(expr.line, "expression is not addressable");
+            const std::string pointer = emitExpr(*unary->operand);
+            if (pointer.empty()) return {};
+            emitNullCheck(pointer, unary->operand->inferredType);
+            return pointer;
+        }
+        if (const auto* index = dynamic_cast<const IndexExpr*>(&expr)) {
+            const std::string indexValue = emitExpr(*index->index);
+            if (indexValue.empty()) return {};
+            const std::string result = temporary();
+            if (isArrayType(index->base->inferredType)) {
+                const std::string arrayAddress = emitAddress(*index->base);
+                if (arrayAddress.empty()) return {};
+                emitBoundsCheck(indexValue, index->base->inferredType->arrayLength());
+                const std::string arrayType = irType(index->base->inferredType);
+                instruction(result + " = getelementptr inbounds " + arrayType + ", " +
+                            arrayType + "* " + arrayAddress + ", i32 0, i32 " + indexValue);
+            } else {
+                const std::string pointer = emitExpr(*index->base);
+                if (pointer.empty()) return {};
+                emitNullCheck(pointer, index->base->inferredType);
+                instruction(result + " = getelementptr inbounds " +
+                            irType(index->base->inferredType->elementType()) + ", " +
+                            irType(index->base->inferredType) + " " + pointer +
+                            ", i32 " + indexValue);
+            }
+            return result;
+        }
+        return failExpr(expr.line, "expression is not addressable");
+    }
+
     std::string emitExpr(const Expr& expr) {
         if (const auto* number = dynamic_cast<const NumberExpr*>(&expr)) {
             const std::uint32_t bits = static_cast<std::uint32_t>(number->value);
             return std::to_string(static_cast<std::int32_t>(bits));
         }
+        if (dynamic_cast<const NullExpr*>(&expr)) {
+            if (!isPointerType(expr.inferredType)) {
+                return failExpr(expr.line, "null literal has no pointer context");
+            }
+            return "null";
+        }
         if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
-            const std::string slot = lookup(variable->name);
-            if (slot.empty()) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            if (isArrayType(expr.inferredType)) {
+                return failExpr(expr.line, "array value requires an index");
+            }
+            const std::string slot = emitAddress(expr);
+            if (slot.empty()) return {};
             const std::string result = temporary();
-            instruction(result + " = load i32, i32* " + slot);
+            const std::string type = irType(expr.inferredType);
+            instruction(result + " = load " + type + ", " + type + "* " + slot);
             return result;
         }
         if (const auto* assign = dynamic_cast<const AssignExpr*>(&expr)) {
-            const std::string slot = lookup(assign->name);
-            if (slot.empty()) {
-                return failExpr(expr.line, "assignment to unknown variable '" + assign->name + "'");
-            }
+            const std::string slot = emitAddress(*assign->target);
+            if (slot.empty()) return {};
             const std::string value = emitExpr(*assign->value);
             if (value.empty()) return {};
-            instruction("store i32 " + value + ", i32* " + slot);
+            const std::string type = irType(expr.inferredType);
+            instruction("store " + type + " " + value + ", " + type + "* " + slot);
             return value;
         }
         if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            if (unary->op == "&") return emitAddress(*unary->operand);
+            if (unary->op == "*") {
+                const std::string address = emitAddress(expr);
+                if (address.empty()) return {};
+                const std::string result = temporary();
+                const std::string type = irType(expr.inferredType);
+                instruction(result + " = load " + type + ", " + type + "* " + address);
+                return result;
+            }
             const std::string operand = emitExpr(*unary->operand);
             if (operand.empty()) return {};
             if (unary->op == "-") {
@@ -149,12 +259,25 @@ struct CodeGenerator::Impl {
             }
             if (unary->op == "!") {
                 const std::string comparison = temporary();
-                instruction(comparison + " = icmp eq i32 " + operand + ", 0");
+                if (isPointerType(unary->operand->inferredType)) {
+                    instruction(comparison + " = icmp eq " +
+                                irType(unary->operand->inferredType) + " " + operand + ", null");
+                } else {
+                    instruction(comparison + " = icmp eq i32 " + operand + ", 0");
+                }
                 const std::string result = temporary();
                 instruction(result + " = zext i1 " + comparison + " to i32");
                 return result;
             }
             return failExpr(expr.line, "unsupported unary operator '" + unary->op + "'");
+        }
+        if (dynamic_cast<const IndexExpr*>(&expr)) {
+            const std::string address = emitAddress(expr);
+            if (address.empty()) return {};
+            const std::string result = temporary();
+            const std::string type = irType(expr.inferredType);
+            instruction(result + " = load " + type + ", " + type + "* " + address);
+            return result;
         }
         if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
             if (binary->op == "&&" || binary->op == "||") return emitShortCircuit(*binary);
@@ -178,7 +301,10 @@ struct CodeGenerator::Impl {
             else if (binary->op == ">=") { opcode = "icmp sge"; comparison = true; }
             else return failExpr(expr.line, "unsupported binary operator '" + binary->op + "'");
 
-            instruction(result + " = " + opcode + " i32 " + left + ", " + right);
+            const std::string operandType = (binary->op == "==" || binary->op == "!=")
+                ? irType(binary->lhs->inferredType) : "i32";
+            instruction(result + " = " + opcode + " " + operandType + " " + left +
+                        ", " + right);
             if (!comparison) return result;
             const std::string widened = temporary();
             instruction(widened + " = zext i1 " + result + " to i32");
@@ -200,14 +326,15 @@ struct CodeGenerator::Impl {
                 const std::string value = emitExpr(*call->args[i]);
                 if (value.empty()) return {};
                 if (i != 0) arguments += ", ";
-                arguments += "i32 " + value;
+                arguments += irType(function->second.parameterTypes[i]) + " " + value;
             }
             if (function->second.returnType->kind() == TypeKind::Void) {
                 instruction("call void @" + call->callee + "(" + arguments + ")");
                 return "void";
             }
             const std::string result = temporary();
-            instruction(result + " = call i32 @" + call->callee + "(" + arguments + ")");
+            instruction(result + " = call " + irType(function->second.returnType) + " @" +
+                        call->callee + "(" + arguments + ")");
             return result;
         }
         return failExpr(expr.line, "internal error: unknown expression node");
@@ -246,11 +373,14 @@ struct CodeGenerator::Impl {
             if (scope.count(declaration->name)) {
                 return fail(stmt.line, "redeclaration of variable '" + declaration->name + "'");
             }
-            const std::string value = declaration->init ? emitExpr(*declaration->init) : "0";
+            const std::string type = irType(declaration->declaredType);
+            const std::string value = declaration->init ? emitExpr(*declaration->init)
+                : (isPointerType(declaration->declaredType) ? "null" :
+                   isArrayType(declaration->declaredType) ? "zeroinitializer" : "0");
             if (value.empty()) return false;
             const std::string slot = "%v" + std::to_string(nextSlot++);
-            allocas << "  " << slot << " = alloca i32\n";
-            instruction("store i32 " + value + ", i32* " + slot);
+            allocas << "  " << slot << " = alloca " << type << "\n";
+            instruction("store " + type + " " + value + ", " + type + "* " + slot);
             scope.emplace(declaration->name, slot);
             return true;
         }
@@ -262,14 +392,14 @@ struct CodeGenerator::Impl {
             }
             const std::string value = emitExpr(*returnStmt->value);
             if (value.empty()) return false;
-            instruction("ret i32 " + value);
+            instruction("ret " + irType(returnStmt->value->inferredType) + " " + value);
             terminated = true;
             return true;
         }
         if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&stmt)) {
             const std::string condition = emitExpr(*ifStmt->cond);
             if (condition.empty()) return false;
-            const std::string conditionBool = toBool(condition);
+            const std::string conditionBool = toBool(condition, ifStmt->cond->inferredType);
             const std::string thenLabel = labelName("if.then");
             const std::string elseLabel = ifStmt->elseBranch ? labelName("if.else") : std::string();
             const std::string mergeLabel = labelName("if.end");
@@ -306,7 +436,7 @@ struct CodeGenerator::Impl {
             emitLabel(conditionLabel);
             const std::string condition = emitExpr(*whileStmt->cond);
             if (condition.empty()) return false;
-            const std::string conditionBool = toBool(condition);
+            const std::string conditionBool = toBool(condition, whileStmt->cond->inferredType);
             instruction("br i1 " + conditionBool + ", label %" + bodyLabel +
                         ", label %" + endLabel);
             terminated = true;
@@ -362,9 +492,11 @@ struct CodeGenerator::Impl {
             if (i != 0) parameters += ", ";
             const std::string argument = "%arg" + std::to_string(i);
             const std::string slot = "%v" + std::to_string(nextSlot++);
-            parameters += "i32 " + argument;
-            allocas << "  " << slot << " = alloca i32\n";
-            body << "  store i32 " << argument << ", i32* " << slot << '\n';
+            const std::string type = irType(function.params[i].type);
+            parameters += type + " " + argument;
+            allocas << "  " << slot << " = alloca " << type << "\n";
+            body << "  store " << type << ' ' << argument << ", " << type << "* "
+                 << slot << '\n';
             scopes.back().emplace(name, slot);
         }
 
@@ -375,7 +507,7 @@ struct CodeGenerator::Impl {
                                            "' may reach the end without returning");
         }
 
-        output << "define " << (function.returnType->kind() == TypeKind::Void ? "void" : "i32")
+        output << "define " << irType(function.returnType)
                << " @" << function.name << '(' << parameters << ") {\nentry:\n"
                << allocas.str() << body.str() << "}\n\n";
         return true;
@@ -386,6 +518,7 @@ struct CodeGenerator::Impl {
         functions.clear();
         globals.clear();
         globalOrder.clear();
+        usesTrap = false;
         for (const auto& declaration : program.declarations) {
             if (const auto* prototype = dynamic_cast<const Prototype*>(declaration.get())) {
                 if (!registerFunction(prototype->returnType, prototype->name,
@@ -405,12 +538,11 @@ struct CodeGenerator::Impl {
             const auto* prototype = dynamic_cast<const Prototype*>(declaration.get());
             if (!prototype || functions.at(prototype->name).hasDefinition ||
                 !emittedDeclarations.insert(prototype->name).second) continue;
-            declarations << "declare "
-                         << (prototype->returnType->kind() == TypeKind::Void ? "void" : "i32")
+            declarations << "declare " << irType(prototype->returnType)
                          << " @" << prototype->name << '(';
             for (std::size_t i = 0; i < prototype->params.size(); ++i) {
                 if (i != 0) declarations << ", ";
-                declarations << "i32";
+                declarations << irType(prototype->params[i].type);
             }
             declarations << ")\n";
         }
@@ -419,14 +551,24 @@ struct CodeGenerator::Impl {
         std::ostringstream globalDefinitions;
         for (const std::string& name : globalOrder) {
             const GlobalVar* global = globals.at(name);
+            const std::string type = irType(global->declaredType);
             globalDefinitions << '@' << name << " = ";
             if (global->isExtern) {
-                globalDefinitions << "external global i32\n";
+                globalDefinitions << "external global " << type << "\n";
             } else {
                 const auto* initializer = dynamic_cast<const NumberExpr*>(global->init.get());
-                const std::int32_t value = initializer
-                    ? static_cast<std::int32_t>(static_cast<std::uint32_t>(initializer->value)) : 0;
-                globalDefinitions << "global i32 " << value << '\n';
+                std::string value;
+                if (initializer) {
+                    value = std::to_string(static_cast<std::int32_t>(
+                        static_cast<std::uint32_t>(initializer->value)));
+                } else if (isPointerType(global->declaredType)) {
+                    value = "null";
+                } else if (isArrayType(global->declaredType)) {
+                    value = "zeroinitializer";
+                } else {
+                    value = "0";
+                }
+                globalDefinitions << "global " << type << ' ' << value << '\n';
             }
         }
         if (!globalOrder.empty()) globalDefinitions << '\n';
@@ -439,8 +581,9 @@ struct CodeGenerator::Impl {
         }
 
         std::ostringstream module;
-        module << "; ModuleID = '" << moduleName << "'\n"
-               << declarations.str() << globalDefinitions.str() << definitions.str();
+        module << "; ModuleID = '" << moduleName << "'\n";
+        if (usesTrap) module << "declare void @llvm.trap()\n\n";
+        module << declarations.str() << globalDefinitions.str() << definitions.str();
         moduleIR = module.str();
         return true;
     }

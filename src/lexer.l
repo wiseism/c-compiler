@@ -25,6 +25,7 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 
 "int"                     return INT;
 "void"                    return VOID;
+"null"                    return NULLPTR;
 "extern"                  return EXTERN;
 "if"                      return IF;
 "else"                    return ELSE;
@@ -46,6 +47,6 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
                               yylval.text = new std::string(yytext);
                               return IDENTIFIER;
                           }
-[(){};,=+\-*/%!<>]        return yytext[0];
+[(){}\[\];,=+\-*/%!<>&]  return yytext[0];
 .                         return INVALID;
 %%

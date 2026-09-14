@@ -7,13 +7,14 @@
 标识符满足 `[A-Za-z_][A-Za-z0-9_]*`，整数文字由十进制数字组成。保留字为：
 
 ```text
-int void extern if else while return
+int void extern if else while return null
 ```
 
-双字符运算符 `== != <= >= && ||` 必须先于单字符规则匹配。其余标点和运算符为：
+`null` 是空指针字面量。双字符运算符 `== != <= >= && ||` 必须先于单字符规则匹配。
+其余标点和运算符为：
 
 ```text
-( ) { } ; , = + - * / % ! < >
+( ) { } [ ] ; , = + - * / % ! & < >
 ```
 
 空白被忽略；换行由 Flex 的 `yylineno` 计数。支持 `//` 行注释和 `/* ... */` 块注释。
@@ -26,31 +27,34 @@ scanner 使用独立 `COMMENT` start condition，避免注释内容被普通 tok
 ```ebnf
 translation-unit ::= { external-declaration } ;
 external-declaration ::= function-definition | function-declaration | global-declaration ;
-type ::= "int" | "void" ;
+base-type ::= "int" | "void" ;
+type ::= base-type { "*" } ;
 function-definition ::= type identifier "(" [ parameters | "void" ] ")" block ;
 function-declaration ::= [ "extern" ] type identifier
                          "(" [ parameters | "void" ] ")" ";" ;
-global-declaration ::= [ "extern" ] type identifier [ "=" expression ] ";" ;
+global-declaration ::= [ "extern" ] type identifier
+                       ( [ "=" expression ] | "[" integer "]" ) ";" ;
 parameters ::= type identifier { "," type identifier } ;
 
 block ::= "{" { statement } "}" ;
 statement ::= block
-            | type identifier [ "=" expression ] ";"
+            | type identifier ( [ "=" expression ] | "[" integer "]" ) ";"
             | "return" [ expression ] ";"
             | "if" "(" expression ")" statement [ "else" statement ]
             | "while" "(" expression ")" statement
             | expression ";" ;
 
 expression ::= assignment ;
-assignment ::= logical-or | identifier "=" assignment ;
+assignment ::= logical-or | unary "=" assignment ;
 logical-or ::= logical-and { "||" logical-and } ;
 logical-and ::= equality { "&&" equality } ;
 equality ::= relational { ("==" | "!=") relational } ;
 relational ::= additive { ("<" | ">" | "<=" | ">=") additive } ;
 additive ::= multiplicative { ("+" | "-") multiplicative } ;
 multiplicative ::= unary { ("*" | "/" | "%") unary } ;
-unary ::= primary | ("-" | "!") unary ;
-primary ::= integer
+unary ::= postfix | ("-" | "!" | "&" | "*") unary ;
+postfix ::= primary { "[" expression "]" } ;
+primary ::= integer | "null"
           | identifier
           | identifier "(" [ arguments ] ")"
           | "(" expression ")" ;
@@ -62,14 +66,19 @@ arguments ::= assignment { "," assignment } ;
 
 ### 1.3 类型和运行时语义
 
-- 变量、合法参数和有值表达式为有符号 32 位整数；`void` 只允许作为函数返回类型。
+- 标量对象可以是有符号 32 位整数或指针；`void` 只允许作为函数返回类型或指针基类型。
 - `0` 为假，任何非零值为真；逻辑及比较表达式的结果规范化为 `0` 或 `1`。
 - 未提供初始化器的局部变量初始化为 `0`。
 - 加减乘按 LLVM `i32` 自然截断。
 - 除零、求余零及有符号除法溢出沿用 LLVM IR 的未定义行为。
 - `&&` 与 `||` 从左到右求值并短路；其他二元操作数按左到右生成。
 - 非 `void` 函数必须在所有生成路径上显式 `return`；`void` 函数可自然结束。
-- 全局 initializer 必须能折叠为整数常量；不执行隐式运行时初始化。
+- 全局 initializer 必须能折叠为整数常量或类型正确的 `null`；不执行隐式运行时初始化。
+- `null` 只能在具体指针上下文中使用，不能转换为整数。
+- 固定数组是不可赋值的地址对象，不隐式退化；元素默认零初始化。
+- 数组下标在运行时检查上下界；编译期可知的越界直接拒绝编译。
+- 每次解引用和指针下标都检查空指针，失败执行 `llvm.trap`。
+- 裸指针没有运行时 extent；对非空指针的越界索引属于未定义行为。
 
 ## 2. AST 数据模型
 
@@ -80,11 +89,13 @@ pass 写入的 `inferredType`；变量、参数和函数均直接持有显式声
 Node
 ├── Expr
 │   ├── NumberExpr
+│   ├── NullExpr
 │   ├── VariableExpr
 │   ├── AssignExpr
 │   ├── UnaryExpr
 │   ├── BinaryExpr
-│   └── CallExpr
+│   ├── CallExpr
+│   └── IndexExpr
 ├── Stmt
 │   ├── BlockStmt
 │   ├── ExprStmt
@@ -117,10 +128,11 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 
 ### 2.2 显式类型对象
 
-`Type` 是不可变对象，当前建模 `Int32`、`Void`、`Pointer` 和 `Array` 四类。基础类型为
+`Type` 是不可变对象，当前建模 `Int32`、`Void`、`Pointer`、`Array` 和推断期使用的
+`NullPointer`。基础类型为
 进程内 canonical shared object，复合类型递归持有 element type。`equals()` 做结构
-等价比较，`toString()` 为诊断提供稳定的人类可读形式。当前语法构造 `Int32` 和
-`Void`；复合类型对象将在指针和数组语法接入时使用。
+等价比较，`toString()` 为诊断提供稳定的人类可读形式。LLVM 8 typed-pointer 模式没有
+`void*`，lowering 将语义层 `void*` 映射成 ABI 等价的 `i8*`。
 
 ## 3. 驱动详细流程
 
@@ -182,24 +194,36 @@ semantic pass 在解析完成、任何 LLVM 状态建立之前运行。第一遍
 
 ## 6. LLVM 类型和存储设计
 
-当前语言只有一种值类型：
+语言类型到 LLVM 的映射如下：
 
 | 语言概念 | LLVM 表示 |
 | --- | --- |
 | `int` 值 | `i32` |
 | `void` 函数返回 | `void` |
+| `T*` | LLVM typed pointer；`void*` 降为 `i8*` |
+| `T[N]` | `[N x T]` |
 | 条件中间值 | `i1` |
-| 局部变量/参数 slot | `alloca i32` |
-| 函数 | `i32 (i32, ... )` |
-| 全局变量 | `@name = global i32 value` / `external global i32` |
+| 局部变量/参数 slot | `alloca T` |
+| 函数 | `result-type (parameter-types...)` |
+| 全局变量 | `@name = global T value` / `external global T` |
 
 局部变量采用 alloca/load/store 形式，而不是在前端自行维护 SSA。LLVM API 后端把
 alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样放在 entry 顶部。
 后续 LLVM `mem2reg`/优化流水线可以将其提升为 SSA 寄存器。
 
 参数在 entry 中复制到 slot，使参数和局部变量共享完全相同的读取、赋值和遮蔽逻辑。
+局部及全局数组用 aggregate zero 初始化。数组不是一等 SSA 值，只能通过下标形成元素
+lvalue；指针和数组元素 assignment 统一走“生成地址 → 生成 RHS → store”。
 
-### 6.1 常量折叠
+### 6.1 内存安全检查
+
+数组元素地址使用 `getelementptr inbounds [N x T], ..., 0, index`。在 GEP 前生成
+`index >= 0 && index < N`，失败分支调用 `llvm.trap` 后 `unreachable`。指针解引用和
+指针 GEP 前生成 `pointer != null` 检查并使用相同 trap CFG。这样空指针和已知 extent
+数组越界具有确定的进程终止语义；普通 `T*` 不附带 extent，非空越界仍遵循 LLVM
+inbounds GEP 的未定义行为。
+
+### 6.2 常量折叠
 
 常量折叠在 typed AST 上递归运行。`+ - *` 使用 32 位无符号位模式计算，避免宿主 C++
 有符号溢出；`/ %` 在除零或 `INT32_MIN / -1` 时保留原表达式。比较和逻辑结果归一为
@@ -213,11 +237,13 @@ alloca 插到 entry block；文本后端将 alloca 单独缓冲，最终同样�
 | AST | LLVM IR 形态 |
 | --- | --- |
 | 数字 | `i32` 常量 |
-| 变量 | `load i32` |
-| 赋值 | 生成 RHS，`store i32`，并返回 RHS 值 |
+| 变量 | 从对象地址 `load T` |
+| 赋值 | 生成目标 lvalue 地址和 RHS，`store`，并返回 RHS 值 |
 | 负号 | `sub i32 0, value` / `CreateNeg` |
 | 逻辑非 | `icmp eq value, 0` 后 `zext i1 to i32` |
 | 函数调用 | 校验函数存在及 arity 后 `call i32` |
+| 取址/解引用 | lvalue 地址 / 空检查后 `load` |
+| 下标 | 数组 bounds check 或指针 null check 后 GEP + load |
 
 返回类型为 `void` 的调用生成 `call void`，仅允许作为 expression statement；semantic
 pass 会阻止它进入赋值、算术、条件或有值 return。
@@ -324,6 +350,9 @@ parser.hpp -------------> lexer.cpp
 - 正向主程序：编译、链接并检查输出 `OK`、退出码 42；
 - 前向调用：证明两遍函数登记有效；
 - 短路副作用：RHS 中的 `putchar` 不应执行；
+- 指针/数组：取址、解引用、参数、全局/局部数组和动态下标；
+- 内存陷阱：空指针、动态数组越界必须异常终止；
+- 静态边界：折叠后常量越界必须在编译期诊断；
 - 语义负例：未知变量、错误 arity、缺少 return；
 - 语法负例：检查失败退出码和源码行号。
 

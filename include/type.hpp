@@ -12,6 +12,7 @@ enum class TypeKind {
     Void,
     Pointer,
     Array,
+    NullPointer,
 };
 
 class Type final {
@@ -36,6 +37,11 @@ public:
         return Ptr(new Type(TypeKind::Array, std::move(element), length));
     }
 
+    static Ptr nullPointer() {
+        static const Ptr instance(new Type(TypeKind::NullPointer));
+        return instance;
+    }
+
     TypeKind kind() const { return kind_; }
     const Ptr& elementType() const { return elementType_; }
     std::size_t arrayLength() const { return arrayLength_; }
@@ -56,6 +62,8 @@ public:
             return elementType_->toString() + "*";
         case TypeKind::Array:
             return elementType_->toString() + "[" + std::to_string(arrayLength_) + "]";
+        case TypeKind::NullPointer:
+            return "null";
         }
         return "<invalid-type>";
     }
@@ -73,6 +81,14 @@ using TypePtr = Type::Ptr;
 
 inline bool sameType(const TypePtr& left, const TypePtr& right) {
     return left && right && left->equals(*right);
+}
+
+inline bool isPointerType(const TypePtr& type) {
+    return type && type->kind() == TypeKind::Pointer;
+}
+
+inline bool isArrayType(const TypePtr& type) {
+    return type && type->kind() == TypeKind::Array;
 }
 
 } // namespace lumen

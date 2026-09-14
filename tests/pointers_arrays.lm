@@ -1,0 +1,27 @@
+int global_values[3];
+
+void write_value(int* target, int value) {
+    *target = value;
+}
+
+int sum_three(int* values) {
+    return values[0] + values[1] + values[2];
+}
+
+int main(void) {
+    int local[3];
+    int index = 0;
+    while (index < 3) {
+        local[index] = (index + 1) * 10;
+        index = index + 1;
+    }
+
+    int* first = &local[0];
+    write_value(&local[1], 20);
+    if (first != null && null == null) {
+        global_values[0] = *first;
+        global_values[1] = first[1];
+        global_values[2] = first[2] - 18;
+    }
+    return sum_three(&global_values[0]);
+}

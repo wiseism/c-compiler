@@ -30,9 +30,11 @@ struct ConstantFolder::Impl {
     }
 
     void foldExpr(std::unique_ptr<Expr>& expr) {
-        if (!expr || number(expr.get()) || dynamic_cast<VariableExpr*>(expr.get())) return;
+        if (!expr || number(expr.get()) || dynamic_cast<NullExpr*>(expr.get()) ||
+            dynamic_cast<VariableExpr*>(expr.get())) return;
 
         if (auto* assign = dynamic_cast<AssignExpr*>(expr.get())) {
+            foldExpr(assign->target);
             foldExpr(assign->value);
             return;
         }
@@ -50,6 +52,22 @@ struct ConstantFolder::Impl {
                 replaceWithNumber(expr, static_cast<std::int32_t>(bits));
             } else if (unary->op == "!") {
                 replaceWithNumber(expr, value == 0 ? 1 : 0);
+            }
+            return;
+        }
+        if (auto* index = dynamic_cast<IndexExpr*>(expr.get())) {
+            foldExpr(index->base);
+            foldExpr(index->index);
+            const auto* foldedIndex = number(index->index.get());
+            if (foldedIndex && index->base->inferredType &&
+                isArrayType(index->base->inferredType)) {
+                const std::int32_t value = valueOf(*foldedIndex);
+                if (value < 0 || static_cast<std::uint32_t>(value) >=
+                                     index->base->inferredType->arrayLength()) {
+                    fail(index->index->line, "array index " + std::to_string(value) +
+                         " is outside [0, " +
+                         std::to_string(index->base->inferredType->arrayLength()) + ")");
+                }
             }
             return;
         }
@@ -127,13 +145,15 @@ struct ConstantFolder::Impl {
         for (auto& declaration : program.declarations) {
             if (auto* global = dynamic_cast<GlobalVar*>(declaration.get())) {
                 foldExpr(global->init);
-                if (global->init && !number(global->init.get())) {
+                if (global->init && !number(global->init.get()) &&
+                    !dynamic_cast<NullExpr*>(global->init.get())) {
                     return fail(global->line, "initializer for global '" + global->name +
                                               "' is not a constant expression");
                 }
             } else if (auto* function = dynamic_cast<Function*>(declaration.get())) {
                 foldStmt(*function->body);
             }
+            if (!errorMessage.empty()) return false;
         }
         return true;
     }

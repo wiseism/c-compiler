@@ -46,12 +46,12 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
     lumen::TypePtr* type;
 }
 
-%token INT VOID EXTERN IF ELSE WHILE RETURN
+%token INT VOID EXTERN IF ELSE WHILE RETURN NULLPTR
 %token EQ NE LE GE AND OR INVALID
 %token <number> NUMBER
 %token <text> IDENTIFIER
 
-%type <expr> expression assignment logical_or logical_and equality relational additive multiplicative unary primary
+%type <expr> expression assignment logical_or logical_and equality relational additive multiplicative unary postfix primary
 %type <exprs> argument_list argument_list_opt
 %type <stmt> statement variable_decl return_stmt if_stmt while_stmt expression_stmt
 %type <block> block
@@ -60,7 +60,7 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
 %type <top> function_declaration global_declaration
 %type <tops> external_list
 %type <params> parameter_list parameter_list_opt
-%type <type> type_specifier
+%type <type> type_specifier base_type
 
 %destructor { delete $$; } <text> <expr> <stmt> <block> <top> <params> <type>
 %destructor { for (auto* p : *$$) delete p; delete $$; } <exprs> <stmts> <tops>
@@ -139,9 +139,31 @@ global_declaration
           delete $2;
           delete $3;
       }
+    | type_specifier IDENTIFIER '[' NUMBER ']' ';' {
+          $$ = new lumen::GlobalVar(
+              lumen::Type::arrayOf(std::move(*$1), static_cast<std::size_t>($4)),
+              std::move(*$2), nullptr, false, @1.first_line);
+          delete $1;
+          delete $2;
+      }
+    | EXTERN type_specifier IDENTIFIER '[' NUMBER ']' ';' {
+          $$ = new lumen::GlobalVar(
+              lumen::Type::arrayOf(std::move(*$2), static_cast<std::size_t>($5)),
+              std::move(*$3), nullptr, true, @1.first_line);
+          delete $2;
+          delete $3;
+      }
     ;
 
 type_specifier
+    : base_type { $$ = $1; }
+    | type_specifier '*' {
+          $$ = new lumen::TypePtr(lumen::Type::pointerTo(std::move(*$1)));
+          delete $1;
+      }
+    ;
+
+base_type
     : INT  { $$ = new lumen::TypePtr(lumen::Type::int32()); }
     | VOID { $$ = new lumen::TypePtr(lumen::Type::voidType()); }
     ;
@@ -198,6 +220,13 @@ variable_decl
           delete $1;
           delete $2;
       }
+    | type_specifier IDENTIFIER '[' NUMBER ']' ';' {
+          $$ = new lumen::VarDeclStmt(
+              lumen::Type::arrayOf(std::move(*$1), static_cast<std::size_t>($4)),
+              std::move(*$2), nullptr, @1.first_line);
+          delete $1;
+          delete $2;
+      }
     ;
 
 return_stmt
@@ -238,9 +267,9 @@ expression
 
 assignment
     : logical_or { $$ = $1; }
-    | IDENTIFIER '=' assignment {
-          $$ = new lumen::AssignExpr(std::move(*$1), std::unique_ptr<lumen::Expr>($3), @2.first_line);
-          delete $1;
+    | unary '=' assignment {
+          $$ = new lumen::AssignExpr(std::unique_ptr<lumen::Expr>($1),
+                                     std::unique_ptr<lumen::Expr>($3), @2.first_line);
       }
     ;
 
@@ -282,13 +311,24 @@ multiplicative
     ;
 
 unary
-    : primary { $$ = $1; }
+    : postfix { $$ = $1; }
     | '-' unary { $$ = new lumen::UnaryExpr("-", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
     | '!' unary { $$ = new lumen::UnaryExpr("!", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
+    | '&' unary { $$ = new lumen::UnaryExpr("&", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
+    | '*' unary { $$ = new lumen::UnaryExpr("*", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
+    ;
+
+postfix
+    : primary { $$ = $1; }
+    | postfix '[' expression ']' {
+          $$ = new lumen::IndexExpr(std::unique_ptr<lumen::Expr>($1),
+                                    std::unique_ptr<lumen::Expr>($3), @2.first_line);
+      }
     ;
 
 primary
     : NUMBER { $$ = new lumen::NumberExpr($1, @1.first_line); }
+    | NULLPTR { $$ = new lumen::NullExpr(@1.first_line); }
     | IDENTIFIER {
           $$ = new lumen::VariableExpr(std::move(*$1), @1.first_line);
           delete $1;

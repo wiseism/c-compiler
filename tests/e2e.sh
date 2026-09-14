@@ -118,3 +118,46 @@ if ! grep -q "initializer for global 'global' is not a constant expression" \
     echo "nonconstant global diagnostic was not specific" >&2
     exit 1
 fi
+
+"$compiler" "$fixtures/pointers_arrays.lm" -o "$output_dir/pointers_arrays.ll" || exit 1
+"$clang" "$output_dir/pointers_arrays.ll" -o "$output_dir/pointers_arrays" || exit 1
+"$output_dir/pointers_arrays"
+pointer_status=$?
+if [[ $pointer_status -ne 42 ]]; then
+    echo "expected pointer/array program exit status 42, got $pointer_status" >&2
+    exit 1
+fi
+if ! grep -q "llvm.trap" "$output_dir/pointers_arrays.ll"; then
+    echo "pointer/array IR does not contain runtime safety traps" >&2
+    exit 1
+fi
+
+for trap_case in null_trap bounds_trap; do
+    "$compiler" "$fixtures/$trap_case.lm" -o "$output_dir/$trap_case.ll" || exit 1
+    "$clang" "$output_dir/$trap_case.ll" -o "$output_dir/$trap_case" || exit 1
+    if "$output_dir/$trap_case" >"$output_dir/$trap_case.stdout" 2>"$output_dir/$trap_case.stderr"; then
+        echo "$trap_case unexpectedly completed without trapping" >&2
+        exit 1
+    fi
+done
+
+if "$compiler" "$fixtures/constant_bounds_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/constant_bounds_error.txt"; then
+    echo "constant out-of-bounds index unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "is outside \[0, 2)" "$output_dir/constant_bounds_error.txt"; then
+    echo "constant bounds diagnostic was not specific" >&2
+    exit 1
+fi
+
+if "$compiler" "$fixtures/pointer_type_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/pointer_type_error.txt"; then
+    echo "invalid pointer initializer unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "cannot initialize 'pointer' of type 'int\*' with 'int'" \
+    "$output_dir/pointer_type_error.txt"; then
+    echo "pointer type diagnostic was not specific" >&2
+    exit 1
+fi

@@ -26,6 +26,10 @@ struct NumberExpr final : Expr {
     std::int64_t value;
 };
 
+struct NullExpr final : Expr {
+    explicit NullExpr(int sourceLine) : Expr(sourceLine) {}
+};
+
 struct VariableExpr final : Expr {
     VariableExpr(std::string variableName, int sourceLine)
         : Expr(sourceLine), name(std::move(variableName)) {}
@@ -33,9 +37,10 @@ struct VariableExpr final : Expr {
 };
 
 struct AssignExpr final : Expr {
-    AssignExpr(std::string variableName, std::unique_ptr<Expr> expression, int sourceLine)
-        : Expr(sourceLine), name(std::move(variableName)), value(std::move(expression)) {}
-    std::string name;
+    AssignExpr(std::unique_ptr<Expr> destination, std::unique_ptr<Expr> expression,
+               int sourceLine)
+        : Expr(sourceLine), target(std::move(destination)), value(std::move(expression)) {}
+    std::unique_ptr<Expr> target;
     std::unique_ptr<Expr> value;
 };
 
@@ -62,6 +67,14 @@ struct CallExpr final : Expr {
         : Expr(sourceLine), callee(std::move(functionName)), args(std::move(arguments)) {}
     std::string callee;
     std::vector<std::unique_ptr<Expr>> args;
+};
+
+struct IndexExpr final : Expr {
+    IndexExpr(std::unique_ptr<Expr> baseExpression, std::unique_ptr<Expr> indexExpression,
+              int sourceLine)
+        : Expr(sourceLine), base(std::move(baseExpression)), index(std::move(indexExpression)) {}
+    std::unique_ptr<Expr> base;
+    std::unique_ptr<Expr> index;
 };
 
 struct Stmt : Node { using Node::Node; };

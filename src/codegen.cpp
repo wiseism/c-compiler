@@ -2,9 +2,11 @@
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
@@ -36,8 +38,22 @@ struct CodeGenerator::Impl {
     llvm::Type* intType() { return llvm::Type::getInt32Ty(context); }
 
     llvm::Type* llvmType(const TypePtr& type) {
-        if (type->kind() == TypeKind::Void) return llvm::Type::getVoidTy(context);
-        return intType();
+        switch (type->kind()) {
+        case TypeKind::Int32:
+            return intType();
+        case TypeKind::Void:
+            return llvm::Type::getVoidTy(context);
+        case TypeKind::Pointer:
+            if (type->elementType()->kind() == TypeKind::Void) {
+                return llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(context));
+            }
+            return llvm::PointerType::getUnqual(llvmType(type->elementType()));
+        case TypeKind::Array:
+            return llvm::ArrayType::get(llvmType(type->elementType()), type->arrayLength());
+        case TypeKind::NullPointer:
+            break;
+        }
+        return nullptr;
     }
 
     bool fail(int line, const std::string& message) {
@@ -52,10 +68,11 @@ struct CodeGenerator::Impl {
         return nullptr;
     }
 
-    llvm::AllocaInst* createAlloca(llvm::Function* function, const std::string& name) {
+    llvm::AllocaInst* createAlloca(llvm::Function* function, const TypePtr& type,
+                                   const std::string& name) {
         llvm::IRBuilder<> entryBuilder(&function->getEntryBlock(),
                                        function->getEntryBlock().begin());
-        return entryBuilder.CreateAlloca(intType(), nullptr, name);
+        return entryBuilder.CreateAlloca(llvmType(type), nullptr, name);
     }
 
     llvm::Value* lookup(const std::string& name) {
@@ -67,7 +84,40 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Value* asBool(llvm::Value* value) {
+        if (value->getType()->isPointerTy()) {
+            auto* pointerType = llvm::cast<llvm::PointerType>(value->getType());
+            return builder.CreateICmpNE(value, llvm::ConstantPointerNull::get(pointerType),
+                                        "ptr.truth");
+        }
         return builder.CreateICmpNE(value, llvm::ConstantInt::get(intType(), 0), "truth");
+    }
+
+    void emitTrapUnless(llvm::Value* condition, const std::string& name) {
+        llvm::Function* function = builder.GetInsertBlock()->getParent();
+        auto* validBlock = llvm::BasicBlock::Create(context, name + ".ok", function);
+        auto* trapBlock = llvm::BasicBlock::Create(context, name + ".trap", function);
+        builder.CreateCondBr(condition, validBlock, trapBlock);
+        builder.SetInsertPoint(trapBlock);
+        llvm::Function* trap = llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::trap);
+        builder.CreateCall(trap);
+        builder.CreateUnreachable();
+        builder.SetInsertPoint(validBlock);
+    }
+
+    void emitNullCheck(llvm::Value* pointer) {
+        auto* pointerType = llvm::cast<llvm::PointerType>(pointer->getType());
+        llvm::Value* notNull = builder.CreateICmpNE(
+            pointer, llvm::ConstantPointerNull::get(pointerType), "nonnull");
+        emitTrapUnless(notNull, "nullcheck");
+    }
+
+    void emitBoundsCheck(llvm::Value* index, std::size_t length) {
+        llvm::Value* nonNegative = builder.CreateICmpSGE(
+            index, llvm::ConstantInt::get(intType(), 0), "index.nonnegative");
+        llvm::Value* belowLength = builder.CreateICmpSLT(
+            index, llvm::ConstantInt::get(intType(), length), "index.inrange");
+        emitTrapUnless(builder.CreateAnd(nonNegative, belowLength, "index.valid"),
+                       "boundscheck");
     }
 
     llvm::Function* declareFunction(const TypePtr& returnType, const std::string& name,
@@ -94,15 +144,18 @@ struct CodeGenerator::Impl {
     bool declareGlobal(const GlobalVar& global) {
         llvm::GlobalVariable* variable = module.getNamedGlobal(global.name);
         if (!variable) {
+            llvm::Type* type = llvmType(global.declaredType);
             llvm::Constant* initializer = nullptr;
             if (!global.isExtern) {
                 const auto* number = dynamic_cast<const NumberExpr*>(global.init.get());
-                initializer = number
-                    ? llvm::ConstantInt::get(intType(),
-                          static_cast<std::uint64_t>(number->value), true)
-                    : llvm::ConstantInt::get(intType(), 0);
+                if (number) {
+                    initializer = llvm::ConstantInt::get(intType(),
+                        static_cast<std::uint64_t>(number->value), true);
+                } else {
+                    initializer = llvm::Constant::getNullValue(type);
+                }
             }
-            new llvm::GlobalVariable(module, intType(), false,
+            new llvm::GlobalVariable(module, type, false,
                                      llvm::GlobalValue::ExternalLinkage,
                                      initializer, global.name);
             return true;
@@ -113,12 +166,49 @@ struct CodeGenerator::Impl {
             }
             const auto* number = dynamic_cast<const NumberExpr*>(global.init.get());
             llvm::Constant* initializer = number
-                ? llvm::ConstantInt::get(intType(),
-                      static_cast<std::uint64_t>(number->value), true)
-                : llvm::ConstantInt::get(intType(), 0);
+                ? static_cast<llvm::Constant*>(llvm::ConstantInt::get(intType(),
+                      static_cast<std::uint64_t>(number->value), true))
+                : llvm::Constant::getNullValue(llvmType(global.declaredType));
             variable->setInitializer(initializer);
         }
         return true;
+    }
+
+    llvm::Value* emitAddress(const Expr& expr) {
+        if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
+            llvm::Value* slot = lookup(variable->name);
+            if (!slot) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            return slot;
+        }
+        if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            if (unary->op != "*") {
+                return failExpr(expr.line, "expression is not addressable");
+            }
+            llvm::Value* pointer = emitExpr(*unary->operand);
+            if (!pointer) return nullptr;
+            emitNullCheck(pointer);
+            return pointer;
+        }
+        if (const auto* index = dynamic_cast<const IndexExpr*>(&expr)) {
+            llvm::Value* indexValue = emitExpr(*index->index);
+            if (!indexValue) return nullptr;
+            if (isArrayType(index->base->inferredType)) {
+                llvm::Value* arrayAddress = emitAddress(*index->base);
+                if (!arrayAddress) return nullptr;
+                emitBoundsCheck(indexValue, index->base->inferredType->arrayLength());
+                llvm::Value* zero = llvm::ConstantInt::get(intType(), 0);
+                return builder.CreateInBoundsGEP(
+                    llvmType(index->base->inferredType), arrayAddress,
+                    {zero, indexValue}, "array.element");
+            }
+            llvm::Value* pointer = emitExpr(*index->base);
+            if (!pointer) return nullptr;
+            emitNullCheck(pointer);
+            return builder.CreateInBoundsGEP(
+                llvmType(index->base->inferredType->elementType()), pointer,
+                indexValue, "pointer.element");
+        }
+        return failExpr(expr.line, "expression is not addressable");
     }
 
     llvm::Value* emitShortCircuit(const BinaryExpr& expr) {
@@ -153,20 +243,34 @@ struct CodeGenerator::Impl {
         if (const auto* number = dynamic_cast<const NumberExpr*>(&expr)) {
             return llvm::ConstantInt::get(intType(), static_cast<std::uint64_t>(number->value), true);
         }
+        if (dynamic_cast<const NullExpr*>(&expr)) {
+            auto* type = llvm::dyn_cast_or_null<llvm::PointerType>(llvmType(expr.inferredType));
+            if (!type) return failExpr(expr.line, "null literal has no pointer context");
+            return llvm::ConstantPointerNull::get(type);
+        }
         if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
-            llvm::Value* slot = lookup(variable->name);
-            if (!slot) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
-            return builder.CreateLoad(intType(), slot, variable->name);
+            if (isArrayType(expr.inferredType)) {
+                return failExpr(expr.line, "array value requires an index");
+            }
+            llvm::Value* slot = emitAddress(expr);
+            if (!slot) return nullptr;
+            return builder.CreateLoad(llvmType(expr.inferredType), slot, variable->name);
         }
         if (const auto* assign = dynamic_cast<const AssignExpr*>(&expr)) {
-            llvm::Value* slot = lookup(assign->name);
-            if (!slot) return failExpr(expr.line, "assignment to unknown variable '" + assign->name + "'");
+            llvm::Value* slot = emitAddress(*assign->target);
+            if (!slot) return nullptr;
             llvm::Value* value = emitExpr(*assign->value);
             if (!value) return nullptr;
             builder.CreateStore(value, slot);
             return value;
         }
         if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            if (unary->op == "&") return emitAddress(*unary->operand);
+            if (unary->op == "*") {
+                llvm::Value* address = emitAddress(expr);
+                if (!address) return nullptr;
+                return builder.CreateLoad(llvmType(expr.inferredType), address, "deref");
+            }
             llvm::Value* operand = emitExpr(*unary->operand);
             if (!operand) return nullptr;
             if (unary->op == "-") return builder.CreateNeg(operand, "neg");
@@ -175,6 +279,11 @@ struct CodeGenerator::Impl {
                 return builder.CreateZExt(result, intType(), "not.i32");
             }
             return failExpr(expr.line, "unsupported unary operator '" + unary->op + "'");
+        }
+        if (dynamic_cast<const IndexExpr*>(&expr)) {
+            llvm::Value* address = emitAddress(expr);
+            if (!address) return nullptr;
+            return builder.CreateLoad(llvmType(expr.inferredType), address, "element");
         }
         if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
             if (binary->op == "&&" || binary->op == "||") return emitShortCircuit(*binary);
@@ -256,10 +365,11 @@ struct CodeGenerator::Impl {
                 return fail(stmt.line, "redeclaration of variable '" + declaration->name + "'");
             }
             llvm::Function* function = builder.GetInsertBlock()->getParent();
-            llvm::AllocaInst* slot = createAlloca(function, declaration->name);
+            llvm::AllocaInst* slot = createAlloca(function, declaration->declaredType,
+                                                  declaration->name);
             llvm::Value* initialValue = declaration->init
                 ? emitExpr(*declaration->init)
-                : llvm::ConstantInt::get(intType(), 0);
+                : llvm::Constant::getNullValue(llvmType(declaration->declaredType));
             if (!initialValue) return false;
             builder.CreateStore(initialValue, slot);
             currentScope.emplace(declaration->name, slot);
@@ -342,7 +452,8 @@ struct CodeGenerator::Impl {
                 return fail(astFunction.line, "duplicate parameter '" + parameterName + "'");
             }
             argument.setName(parameterName);
-            llvm::AllocaInst* slot = createAlloca(function, parameterName);
+            llvm::AllocaInst* slot = createAlloca(
+                function, astFunction.params[index - 1].type, parameterName);
             builder.CreateStore(&argument, slot);
             scopes.back().emplace(parameterName, slot);
         }

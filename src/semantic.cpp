@@ -54,21 +54,63 @@ struct SemanticAnalyzer::Impl {
                           "', got '" + (actual ? actual->toString() : "<unknown>") + "'");
     }
 
+    static bool isScalar(const TypePtr& type) {
+        return type && (type->kind() == TypeKind::Int32 || type->kind() == TypeKind::Pointer ||
+                        type->kind() == TypeKind::NullPointer);
+    }
+
+    static bool isLValue(const Expr& expr) {
+        if (dynamic_cast<const VariableExpr*>(&expr) || dynamic_cast<const IndexExpr*>(&expr)) {
+            return true;
+        }
+        const auto* unary = dynamic_cast<const UnaryExpr*>(&expr);
+        return unary && unary->op == "*";
+    }
+
+    static void resolveNull(Expr& expr, const TypePtr& expected) {
+        if (expr.inferredType && expr.inferredType->kind() == TypeKind::NullPointer &&
+            isPointerType(expected)) {
+            expr.inferredType = expected;
+        }
+    }
+
+    static bool assignable(const TypePtr& destination, const TypePtr& source) {
+        return sameType(destination, source) ||
+               (isPointerType(destination) && source &&
+                source->kind() == TypeKind::NullPointer);
+    }
+
+    static bool validObjectType(const TypePtr& type) {
+        if (!type || type->kind() == TypeKind::Void) return false;
+        if (type->kind() == TypeKind::Array) {
+            return type->arrayLength() > 0 && validObjectType(type->elementType());
+        }
+        return type->kind() != TypeKind::NullPointer;
+    }
+
     TypePtr analyzeExpr(Expr& expr) {
         TypePtr result;
         if (dynamic_cast<NumberExpr*>(&expr)) {
             result = Type::int32();
+        } else if (dynamic_cast<NullExpr*>(&expr)) {
+            result = Type::nullPointer();
         } else if (auto* variable = dynamic_cast<VariableExpr*>(&expr)) {
             result = lookup(variable->name);
             if (!result) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
         } else if (auto* assign = dynamic_cast<AssignExpr*>(&expr)) {
-            TypePtr target = lookup(assign->name);
-            if (!target) {
-                return failExpr(expr.line, "assignment to unknown variable '" + assign->name + "'");
+            if (!isLValue(*assign->target)) {
+                return failExpr(expr.line, "left side of assignment is not assignable");
+            }
+            TypePtr target = analyzeExpr(*assign->target);
+            if (!target) return nullptr;
+            if (isArrayType(target)) {
+                return failExpr(expr.line, "arrays are not assignable");
             }
             TypePtr value = analyzeExpr(*assign->value);
             if (!value) return nullptr;
-            if (!sameType(target, value)) {
+            resolveNull(*assign->value, target);
+            value = assign->value->inferredType;
+            if (!assignable(target, value)) {
                 return failExpr(expr.line, "cannot assign '" + value->toString() + "' to '" +
                                            target->toString() + "'");
             }
@@ -76,18 +118,76 @@ struct SemanticAnalyzer::Impl {
         } else if (auto* unary = dynamic_cast<UnaryExpr*>(&expr)) {
             TypePtr operand = analyzeExpr(*unary->operand);
             if (!operand) return nullptr;
-            if (!expectType(operand, Type::int32(), expr.line,
-                            "operator '" + unary->op + "'")) return nullptr;
-            result = Type::int32();
+            if (unary->op == "-") {
+                if (!expectType(operand, Type::int32(), expr.line, "operator '-'")) return nullptr;
+                result = Type::int32();
+            } else if (unary->op == "!") {
+                if (!isScalar(operand)) {
+                    return failExpr(expr.line, "operator '!' requires a scalar operand, got '" +
+                                               operand->toString() + "'");
+                }
+                if (operand->kind() == TypeKind::NullPointer) {
+                    unary->operand->inferredType = Type::pointerTo(Type::voidType());
+                }
+                result = Type::int32();
+            } else if (unary->op == "&") {
+                if (!isLValue(*unary->operand)) {
+                    return failExpr(expr.line, "operator '&' requires an lvalue");
+                }
+                if (isArrayType(operand)) {
+                    return failExpr(expr.line, "take the address of an array element, not the array");
+                }
+                result = Type::pointerTo(operand);
+            } else if (unary->op == "*") {
+                if (!isPointerType(operand)) {
+                    return failExpr(expr.line, "operator '*' requires a pointer, got '" +
+                                               operand->toString() + "'");
+                }
+                if (operand->elementType()->kind() == TypeKind::Void) {
+                    return failExpr(expr.line, "cannot dereference a void pointer");
+                }
+                result = operand->elementType();
+            } else {
+                return failExpr(expr.line, "unsupported unary operator '" + unary->op + "'");
+            }
         } else if (auto* binary = dynamic_cast<BinaryExpr*>(&expr)) {
             TypePtr left = analyzeExpr(*binary->lhs);
             if (!left) return nullptr;
             TypePtr right = analyzeExpr(*binary->rhs);
             if (!right) return nullptr;
-            if (!expectType(left, Type::int32(), expr.line,
-                            "left operand of '" + binary->op + "'")) return nullptr;
-            if (!expectType(right, Type::int32(), expr.line,
-                            "right operand of '" + binary->op + "'")) return nullptr;
+            if (binary->op == "==" || binary->op == "!=") {
+                if (left->kind() == TypeKind::NullPointer &&
+                    right->kind() == TypeKind::NullPointer) {
+                    const TypePtr voidPointer = Type::pointerTo(Type::voidType());
+                    binary->lhs->inferredType = voidPointer;
+                    binary->rhs->inferredType = voidPointer;
+                }
+                resolveNull(*binary->lhs, right);
+                resolveNull(*binary->rhs, left);
+                left = binary->lhs->inferredType;
+                right = binary->rhs->inferredType;
+                if (!sameType(left, right)) {
+                    return failExpr(expr.line, "operands of '" + binary->op +
+                                               "' have incompatible types '" + left->toString() +
+                                               "' and '" + right->toString() + "'");
+                }
+            } else if (binary->op == "&&" || binary->op == "||") {
+                if (!isScalar(left) || !isScalar(right)) {
+                    return failExpr(expr.line, "operator '" + binary->op +
+                                               "' requires scalar operands");
+                }
+                if (left->kind() == TypeKind::NullPointer) {
+                    binary->lhs->inferredType = Type::pointerTo(Type::voidType());
+                }
+                if (right->kind() == TypeKind::NullPointer) {
+                    binary->rhs->inferredType = Type::pointerTo(Type::voidType());
+                }
+            } else {
+                if (!expectType(left, Type::int32(), expr.line,
+                                "left operand of '" + binary->op + "'")) return nullptr;
+                if (!expectType(right, Type::int32(), expr.line,
+                                "right operand of '" + binary->op + "'")) return nullptr;
+            }
             result = Type::int32();
         } else if (auto* call = dynamic_cast<CallExpr*>(&expr)) {
             const auto found = functions.find(call->callee);
@@ -102,7 +202,9 @@ struct SemanticAnalyzer::Impl {
             for (std::size_t i = 0; i < call->args.size(); ++i) {
                 TypePtr argument = analyzeExpr(*call->args[i]);
                 if (!argument) return nullptr;
-                if (!sameType(argument, found->second.parameterTypes[i])) {
+                resolveNull(*call->args[i], found->second.parameterTypes[i]);
+                argument = call->args[i]->inferredType;
+                if (!assignable(found->second.parameterTypes[i], argument)) {
                     return failExpr(call->args[i]->line, "argument " + std::to_string(i + 1) +
                                " of '" + call->callee + "' requires '" +
                                found->second.parameterTypes[i]->toString() + "', got '" +
@@ -110,6 +212,32 @@ struct SemanticAnalyzer::Impl {
                 }
             }
             result = found->second.returnType;
+        } else if (auto* index = dynamic_cast<IndexExpr*>(&expr)) {
+            TypePtr base = analyzeExpr(*index->base);
+            if (!base) return nullptr;
+            TypePtr indexType = analyzeExpr(*index->index);
+            if (!indexType || !expectType(indexType, Type::int32(), index->index->line,
+                                          "array index")) return nullptr;
+            if (!isArrayType(base) && !isPointerType(base)) {
+                return failExpr(expr.line, "indexing requires an array or pointer, got '" +
+                                           base->toString() + "'");
+            }
+            if (isArrayType(base)) {
+                if (const auto* literal = dynamic_cast<const NumberExpr*>(index->index.get())) {
+                    const std::int64_t value = literal->value;
+                    if (value < 0 || static_cast<std::uint64_t>(value) >= base->arrayLength()) {
+                        return failExpr(index->index->line, "array index " +
+                            std::to_string(value) + " is outside [0, " +
+                            std::to_string(base->arrayLength()) + ")");
+                    }
+                }
+                result = base->elementType();
+            } else {
+                if (base->elementType()->kind() == TypeKind::Void) {
+                    return failExpr(expr.line, "cannot index a void pointer");
+                }
+                result = base->elementType();
+            }
         } else {
             return failExpr(expr.line, "internal error: unknown expression node");
         }
@@ -147,12 +275,22 @@ struct SemanticAnalyzer::Impl {
             return analyzeBlock(*block, true, definitelyReturns);
         }
         if (auto* expression = dynamic_cast<ExprStmt*>(&stmt)) {
-            return analyzeExpr(*expression->expr) != nullptr;
+            TypePtr type = analyzeExpr(*expression->expr);
+            if (!type) return false;
+            if (type->kind() == TypeKind::NullPointer) {
+                return fail(stmt.line, "null literal requires a pointer context");
+            }
+            if (isArrayType(type)) {
+                return fail(stmt.line, "array value requires an index");
+            }
+            return true;
         }
         if (auto* declaration = dynamic_cast<VarDeclStmt*>(&stmt)) {
             auto& currentScope = scopes.back();
-            if (declaration->declaredType->kind() == TypeKind::Void) {
-                return fail(stmt.line, "variable '" + declaration->name + "' cannot have type void");
+            if (!validObjectType(declaration->declaredType)) {
+                return fail(stmt.line, "variable '" + declaration->name +
+                                       "' has invalid object type '" +
+                                       declaration->declaredType->toString() + "'");
             }
             if (currentScope.count(declaration->name)) {
                 return fail(stmt.line, "redeclaration of variable '" + declaration->name + "'");
@@ -160,7 +298,9 @@ struct SemanticAnalyzer::Impl {
             if (declaration->init) {
                 TypePtr initializer = analyzeExpr(*declaration->init);
                 if (!initializer) return false;
-                if (!sameType(declaration->declaredType, initializer)) {
+                resolveNull(*declaration->init, declaration->declaredType);
+                initializer = declaration->init->inferredType;
+                if (!assignable(declaration->declaredType, initializer)) {
                     return fail(stmt.line, "cannot initialize '" + declaration->name +
                                            "' of type '" + declaration->declaredType->toString() +
                                            "' with '" + initializer->toString() + "'");
@@ -177,7 +317,9 @@ struct SemanticAnalyzer::Impl {
             } else {
                 TypePtr value = analyzeExpr(*returnStmt->value);
                 if (!value) return false;
-                if (!sameType(currentReturnType, value)) {
+                resolveNull(*returnStmt->value, currentReturnType);
+                value = returnStmt->value->inferredType;
+                if (!assignable(currentReturnType, value)) {
                     return fail(stmt.line, "return requires '" + currentReturnType->toString() +
                                            "', got '" + value->toString() + "'");
                 }
@@ -187,8 +329,12 @@ struct SemanticAnalyzer::Impl {
         }
         if (auto* ifStmt = dynamic_cast<IfStmt*>(&stmt)) {
             TypePtr condition = analyzeExpr(*ifStmt->cond);
-            if (!condition || !expectType(condition, Type::int32(), ifStmt->cond->line,
-                                          "if condition")) return false;
+            if (!condition || !isScalar(condition)) {
+                return fail(ifStmt->cond->line, "if condition requires a scalar value");
+            }
+            if (condition->kind() == TypeKind::NullPointer) {
+                ifStmt->cond->inferredType = Type::pointerTo(Type::voidType());
+            }
             bool thenReturns = false;
             if (!analyzeScoped(*ifStmt->thenBranch, thenReturns)) return false;
             bool elseReturns = false;
@@ -198,8 +344,12 @@ struct SemanticAnalyzer::Impl {
         }
         if (auto* whileStmt = dynamic_cast<WhileStmt*>(&stmt)) {
             TypePtr condition = analyzeExpr(*whileStmt->cond);
-            if (!condition || !expectType(condition, Type::int32(), whileStmt->cond->line,
-                                          "while condition")) return false;
+            if (!condition || !isScalar(condition)) {
+                return fail(whileStmt->cond->line, "while condition requires a scalar value");
+            }
+            if (condition->kind() == TypeKind::NullPointer) {
+                whileStmt->cond->inferredType = Type::pointerTo(Type::voidType());
+            }
             bool ignored = false;
             return analyzeScoped(*whileStmt->body, ignored);
         }
@@ -238,8 +388,10 @@ struct SemanticAnalyzer::Impl {
     }
 
     bool registerGlobal(const GlobalVar& global) {
-        if (global.declaredType->kind() == TypeKind::Void) {
-            return fail(global.line, "variable '" + global.name + "' cannot have type void");
+        if (!validObjectType(global.declaredType)) {
+            return fail(global.line, "variable '" + global.name +
+                                     "' has invalid object type '" +
+                                     global.declaredType->toString() + "'");
         }
         const auto kind = topLevelIsFunction.find(global.name);
         if (kind != topLevelIsFunction.end() && kind->second) {
@@ -266,7 +418,9 @@ struct SemanticAnalyzer::Impl {
         if (!global.init) return true;
         TypePtr initializer = analyzeExpr(*global.init);
         if (!initializer) return false;
-        if (!sameType(global.declaredType, initializer)) {
+        resolveNull(*global.init, global.declaredType);
+        initializer = global.init->inferredType;
+        if (!assignable(global.declaredType, initializer)) {
             return fail(global.line, "cannot initialize global '" + global.name +
                                      "' of type '" + global.declaredType->toString() +
                                      "' with '" + initializer->toString() + "'");
