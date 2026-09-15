@@ -12,6 +12,7 @@ struct CodegenOptions {
     bool emitObject = false;
     bool debugInfo = false;
     std::string sourcePath;
+    std::string passSnapshotDirectory;
 };
 
 class CodeGenerator {

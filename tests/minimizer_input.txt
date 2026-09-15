@@ -1,0 +1,6 @@
+; removable prelude
+define i32 @unrelated() {
+  ret i32 0
+}
+; TRIGGER_FAILURE
+; removable epilogue

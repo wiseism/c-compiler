@@ -50,3 +50,13 @@ if [[ ! -s "$output_dir/debug.o" ]]; then
     echo "debug object file is empty" >&2
     exit 1
 fi
+
+"$compiler" -O1 --save-pass-ir "$output_dir/pass-ir" "$source_file" \
+    -o "$output_dir/snapshotted.ll" || exit 1
+snapshot_count=$(find "$output_dir/pass-ir" -type f -name '*.ll' | wc -l)
+if [[ $snapshot_count -lt 3 ]] ||
+   ! find "$output_dir/pass-ir" -type f -name '*-frontend.ll' | grep -q . ||
+   ! find "$output_dir/pass-ir" -type f -name '*-final.ll' | grep -q .; then
+    echo "per-pass snapshots are incomplete" >&2
+    exit 1
+fi

@@ -12,6 +12,7 @@ void yyerror(const char* message);
 
 std::unique_ptr<lumen::Program> parsedProgram;
 std::vector<std::string> parseDiagnostics;
+bool suppressParserDiagnostics = false;
 
 template <typename T>
 static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
@@ -380,5 +381,5 @@ void yyerror(const char* message) {
     std::string diagnostic = "line " + std::to_string(yylloc.first_line) + ":" +
                              std::to_string(yylloc.first_column) + ": " + message;
     parseDiagnostics.push_back(diagnostic);
-    std::cerr << diagnostic << '\n';
+    if (!suppressParserDiagnostics) std::cerr << diagnostic << '\n';
 }

@@ -35,6 +35,19 @@ jobs:
       - name: Test
         run: ctest --test-dir build-api --output-on-failure
 
+      - name: Build textual reference backend
+        run: |
+          cmake -S . -B build-reference -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE
+          cmake --build build-reference --parallel 2
+
+      - name: Differential test
+        run: |
+          bash tests/differential.sh \
+            ./build-api/lumenc ./build-reference/lumenc \
+            clang tests build-differential
+
   text-ir:
     name: Textual LLVM IR backend
     runs-on: ubuntu-24.04
@@ -60,3 +73,31 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-text --output-on-failure
+
+  frontend-fuzz:
+    name: Frontend fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bison clang cmake flex ninja-build
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE \
+            -DLUMEN_BUILD_FUZZER=ON
+
+      - name: Build fuzzer
+        run: cmake --build build-fuzz --target lumen_frontend_fuzzer --parallel 2
+
+      - name: Fuzz smoke
+        run: ctest --test-dir build-fuzz -R frontend_fuzz_smoke --output-on-failure

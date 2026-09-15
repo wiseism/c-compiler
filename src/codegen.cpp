@@ -16,6 +16,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #if LLVM_VERSION_MAJOR >= 12
@@ -36,10 +37,13 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
-#include <string>
+#include <iomanip>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -63,6 +67,44 @@ struct CodeGenerator::Impl {
     const TypedProgram* typedProgram = nullptr;
     std::unordered_map<SymbolId, llvm::Value*> storage;
     std::string errorMessage;
+    std::size_t snapshotIndex = 0;
+    std::string lastSnapshotIR;
+
+    bool writeSnapshot(const std::string& label, bool force = false) {
+        if (options.passSnapshotDirectory.empty()) return true;
+        std::string currentIR;
+        llvm::raw_string_ostream stream(currentIR);
+        module.print(stream, nullptr);
+        stream.flush();
+        if (!force && currentIR == lastSnapshotIR) return true;
+        lastSnapshotIR = currentIR;
+        std::error_code ec;
+        std::filesystem::create_directories(options.passSnapshotDirectory, ec);
+        if (ec) {
+            errorMessage = "cannot create pass snapshot directory '" +
+                           options.passSnapshotDirectory + "': " + ec.message();
+            return false;
+        }
+        std::string safeLabel;
+        safeLabel.reserve(label.size());
+        for (unsigned char character : label) {
+            safeLabel.push_back(std::isalnum(character) ? static_cast<char>(character) : '_');
+        }
+        if (safeLabel.size() > 80) safeLabel.resize(80);
+        std::ostringstream filename;
+        filename << std::setfill('0') << std::setw(4) << snapshotIndex++ << '-'
+                 << safeLabel << ".ll";
+        const std::filesystem::path path =
+            std::filesystem::path(options.passSnapshotDirectory) / filename.str();
+        llvm::raw_fd_ostream output(path.string(), ec, llvm::sys::fs::OF_Text);
+        if (ec) {
+            errorMessage = "cannot write pass snapshot '" + path.string() + "': " +
+                           ec.message();
+            return false;
+        }
+        output << currentIR;
+        return true;
+    }
 
     void initializeDebugInfo() {
         if (!options.debugInfo) return;
@@ -99,7 +141,8 @@ struct CodeGenerator::Impl {
 
     void setDebugLocation(int line, int column) {
         if (!debugScope) return;
-        builder.SetCurrentDebugLocation(llvm::DebugLoc::get(line, column, debugScope));
+        builder.SetCurrentDebugLocation(
+            llvm::DebugLoc(llvm::DILocation::get(context, line, column, debugScope)));
     }
 
     void declareDebugVariable(llvm::Value* storageValue, const std::string& name,
@@ -154,7 +197,22 @@ struct CodeGenerator::Impl {
         llvm::FunctionAnalysisManager functionAnalyses;
         llvm::CGSCCAnalysisManager cgsccAnalyses;
         llvm::ModuleAnalysisManager moduleAnalyses;
-        llvm::PassBuilder passBuilder(targetMachine.get());
+        llvm::PassInstrumentationCallbacks instrumentation;
+        if (!options.passSnapshotDirectory.empty()) {
+            instrumentation.registerAfterPassCallback(
+                [this](llvm::StringRef passName, llvm::Any) {
+                    if (errorMessage.empty()) writeSnapshot(passName.str());
+                });
+        }
+#if LLVM_VERSION_MAJOR >= 16
+        llvm::PassBuilder passBuilder(targetMachine.get(), llvm::PipelineTuningOptions(),
+                                      std::nullopt, &instrumentation);
+#elif LLVM_VERSION_MAJOR >= 11
+        llvm::PassBuilder passBuilder(targetMachine.get(), llvm::PipelineTuningOptions(),
+                                      llvm::None, &instrumentation);
+#else
+        llvm::PassBuilder passBuilder(targetMachine.get(), llvm::None, &instrumentation);
+#endif
         passBuilder.registerModuleAnalyses(moduleAnalyses);
         passBuilder.registerCGSCCAnalyses(cgsccAnalyses);
         passBuilder.registerFunctionAnalyses(functionAnalyses);
@@ -172,7 +230,7 @@ struct CodeGenerator::Impl {
 #endif
         llvm::ModulePassManager passes = passBuilder.buildPerModuleDefaultPipeline(level);
         passes.run(module, moduleAnalyses);
-        return true;
+        return errorMessage.empty();
     }
 
     llvm::Type* intType() { return llvm::Type::getInt32Ty(context); }
@@ -604,6 +662,8 @@ struct CodeGenerator::Impl {
     bool generate(const TypedProgram& program) {
         typedProgram = &program;
         storage.clear();
+        snapshotIndex = 0;
+        lastSnapshotIR.clear();
         initializeDebugInfo();
         for (const TypedFunction& function : program.functions) {
             declareFunction(function);
@@ -613,6 +673,7 @@ struct CodeGenerator::Impl {
             if (function.definition && !emitFunction(function)) return false;
         }
         if (debugBuilder) debugBuilder->finalize();
+        if (!writeSnapshot("frontend", true)) return false;
 
         std::string verificationError;
         llvm::raw_string_ostream stream(verificationError);
@@ -622,6 +683,7 @@ struct CodeGenerator::Impl {
             return false;
         }
         if (!optimizeModule()) return false;
+        if (!writeSnapshot("final", true)) return false;
         std::string optimizedVerificationError;
         llvm::raw_string_ostream optimizedStream(optimizedVerificationError);
         if (llvm::verifyModule(module, &optimizedStream)) {

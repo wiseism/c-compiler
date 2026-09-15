@@ -471,6 +471,10 @@ struct CodeGenerator::Impl {
             errorMessage = "-g requires an LLVM development package and the LLVM API backend";
             return false;
         }
+        if (!options.passSnapshotDirectory.empty()) {
+            errorMessage = "--save-pass-ir requires an LLVM development package and the LLVM API backend";
+            return false;
+        }
         typedProgram = &program;
         storage.clear();
         usesTrap = false;

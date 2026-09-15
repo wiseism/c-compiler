@@ -377,6 +377,19 @@ typed IR 才交给 constant folder 与后端。
 完成后统一 `finalize()` metadata，再执行 module verifier；对象生成阶段由 TargetMachine
 写出 DWARF。fallback 对 `-g` 返回能力诊断。
 
+### 9.3 Pass 快照与故障最小化
+
+`--save-pass-ir <dir>` 启用 `PassInstrumentationCallbacks::registerAfterPassCallback`。
+后端先保存 `frontend` module；每个 pass 回调把当前 module 与上一份文本比较，仅当 IR
+改变时用递增序号和清洗后的 pass 名写文件；流水线完成后强制保存 `final`。这保留了
+pass 顺序，又避免 analysis/no-op pass 生成大量重复文件。目录创建或写入失败属于编译
+错误。fallback 明确拒绝该选项。
+
+`tools/minimize_failure.py` 实现基于行的 ddmin：把候选内容写入隔离临时目录，替换命令
+中的 `{input}`，非零退出表示目标故障仍存在；通过逐步删除分块并缩小粒度得到近似
+1-minimal 结果。超时不视为复现，以免把“变慢”误判为目标失败。该工具既可处理 `.lm`，
+也可处理 pass snapshot `.ll`。
+
 ## 10. 构建系统
 
 CMake 的生成依赖为：
@@ -388,8 +401,12 @@ parser.hpp -------------> lexer.cpp
 ```
 
 `ADD_FLEX_BISON_DEPENDENCY` 保证并行构建时 parser header 先于 scanner 编译可用。源码
-目录和 binary 目录都加入 include path。找到 LLVM 时链接 `core`、`support` 组件；
-没有找到时不引入任何 LLVM headers 或 libraries。
+目录和 binary 目录都加入 include path。找到 LLVM 时链接 `core`、`support`、`passes`、
+`nativecodegen` 和 `native` 组件；没有找到时不引入任何 LLVM headers 或 libraries。
+
+`LUMEN_BUILD_FUZZER=ON` 增加不含 driver/codegen 的前端 fuzz target，默认使用
+`-fsanitize=fuzzer,address,undefined`。`LUMEN_FUZZER_STANDALONE=ON` 为缺少 libFuzzer
+runtime 的环境提供同一入口的 seed-only sanitizer runner，不替代 CI 中的变异测试。
 
 ## 11. 测试设计
 
@@ -402,23 +419,27 @@ parser.hpp -------------> lexer.cpp
 - 内存陷阱：空指针、动态数组越界必须异常终止；
 - 静态边界：折叠后常量越界必须在编译期诊断；
 - LLVM 后端：验证 O2 IR 变化、目标 triple、O3 对象输出、debug metadata 及链接后行为；
+- pass 可观测性：验证 frontend/changed-pass/final 快照均存在；
 - fallback 限制：验证不支持的优化、对象和 `-g` 模式产生确定诊断；
 - 语义负例：未知变量、错误 arity、缺少 return，并验证一次聚合多个错误；
-- 语法负例：检查失败退出码、源码行列和分号边界恢复。
+- 语法负例：检查失败退出码、源码行列和分号边界恢复；
+- 差分：比较两个后端生成程序的 stdout 和退出码；
+- fuzz/minimizer：seed corpus sanitizer smoke 与确定性 ddmin 回归。
 
 CTest 通过 `$<TARGET_FILE:lumenc>` 传入实际构建产物，避免依赖 PATH。CI 为 LLVM API
 和 fallback 建立不同 build directory，防止 CMake cache 让后端选择结果互相污染。
 
 ## 12. CI 设计
 
-`.github/workflows/ci.yml` 在 push、pull request 和手工触发时运行两个 Linux job：
+`.github/workflows/ci.yml` 在 push、pull request 和手工触发时运行三个 Linux job：
 
 1. `llvm-api` 安装 LLVM 开发包，将 `llvm-config --cmakedir` 显式传给 CMake，并断言
    配置日志选择 LLVM API 后端。
 2. `text-ir` 显式设置 `CMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE`，验证最小依赖路径。
+3. `frontend-fuzz` 使用 Clang/libFuzzer 与 ASan/UBSan 执行 seed corpus 的 200 次变异。
 
-两个 job 均执行 configure、build 和 `ctest --output-on-failure`。这既验证行为，也验证
-Flex/Bison 生成代码能在干净环境从零构建。
+`llvm-api` job 还构建文本 reference compiler 并运行行为差分。所有 job 都从干净环境
+生成 Flex/Bison 代码，普通后端 job 执行完整 CTest。
 
 ## 13. 调试手册
 
@@ -439,6 +460,6 @@ Flex/Bison 生成代码能在干净环境从零构建。
 
 1. 先证明 `-O0` IR 通过 verifier 并能执行。
 2. 用 `opt -O1/-O2` 确认首次失败优化等级。
-3. LLVM 8 使用 `-print-before/-print-after`；支持新 pass manager 的版本可使用
-   `-mllvm -print-changed` 或对应 `opt` 参数。
-4. 锁定 pass 后保存 pass 前 IR，用 `llvm-reduce` 或手工删除函数/基本块最小化。
+3. 用 `--save-pass-ir snapshots` 比较相邻编号文件，锁定首次改变行为的 pass。
+4. 对对应 `.ll` 执行 `tools/minimize_failure.py`；有新版 LLVM 时还可进一步使用
+   `llvm-reduce` 做 IR-aware 最小化。

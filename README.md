@@ -62,6 +62,15 @@ clang fibonacci.o -o fibonacci
 LLVM debug metadata，并让对象文件携带 DWARF。PassBuilder、对象文件和调试信息输出
 需要 LLVM 开发包；文本 IR fallback 会给出明确诊断。
 
+定位优化回归时可保存初始、每个实际改变 IR 的 pass 以及最终快照：
+
+```bash
+./build/lumenc -O2 --save-pass-ir pass-ir input.lm -o output.ll
+python3 tools/minimize_failure.py -o reduced.ll suspect.ll -- checker '{input}'
+```
+
+最小化器把测试命令的非零退出视为“仍能复现”；测试命令应只在目标故障出现时失败。
+
 省略 `-o` 时 LLVM IR 写到标准输出：
 
 ```bash
@@ -99,11 +108,26 @@ src/constant_fold.cpp  保持短路语义的 AST 常量折叠
 src/codegen.cpp   LLVM C++ API IR 生成
 src/main.cpp      命令行驱动
 tests/e2e.sh      源码 → IR → 原生程序的端到端测试
+tests/fuzz_driver.cpp  libFuzzer 前端入口
+tests/differential.sh LLVM API/文本后端行为差分
+tools/minimize_failure.py  通用文本/IR delta-debug 最小化器
 ```
+
+使用 Clang 构建并运行 libFuzzer smoke：
+
+```bash
+cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE -DLUMEN_BUILD_FUZZER=ON
+cmake --build build-fuzz --target lumen_frontend_fuzzer
+ctest --test-dir build-fuzz -R frontend_fuzz_smoke --output-on-failure
+```
+
+没有 libFuzzer runtime 的本机可加 `-DLUMEN_FUZZER_STANDALONE=ON`，仍使用
+ASan/UBSan 对 seed corpus 做确定性 smoke；CI 使用真正的 libFuzzer 执行变异。
 
 进一步阅读：[架构设计](docs/architecture.md) ·
 [详细设计](docs/detailed-design.md)
 
-排查 LLVM pass 引入的问题时，可以对后续 `opt`/`clang` 流程使用
-`-mllvm -print-changed`；本项目也会在输出前运行 LLVM verifier，尽量把坏 IR
-截在编译器内部。
+排查 LLVM pass 引入的问题时，优先使用 `--save-pass-ir`；也可以对后续
+`opt`/`clang` 流程使用 `-mllvm -print-changed`。本项目在优化前后均运行 LLVM
+verifier，尽量把坏 IR 截在编译器内部。

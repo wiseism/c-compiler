@@ -15,10 +15,10 @@ Lumen C 是一个小型但端到端完整的 C 风格编译器，目标是展示
 2. 构建具有明确所有权的 AST，使前端与后端解耦。
 3. 完成名字解析、作用域、函数签名等基础语义检查。
 4. 生成经过验证、可继续优化和链接的 LLVM IR。
-5. 对语法错误、语义错误和坏 IR 尽早失败，并给出源码行号。
+5. 对语法错误、语义错误和坏 IR 尽早失败，并给出源码行列号。
 6. 同一套端到端测试同时约束 LLVM API 后端和兼容文本 IR 后端。
 
-非目标包括完整兼容 ISO C、预处理器、调试信息、对象文件直接生成和结构体类型系统。
+非目标包括完整兼容 ISO C、预处理器、链接器、跨目标工具链和结构体类型系统。
 
 ## 3. 系统上下文
 
@@ -43,15 +43,15 @@ flowchart LR
     LLVM --> Native[原生程序]
 ```
 
-编译器进程以单个源文件为输入，以 LLVM IR 为输出。链接系统库、选择目标平台和生成
-最终可执行文件由 `clang` 完成，因而编译器本身不复制 LLVM 的目标机和链接器职责。
+编译器进程以单个源文件为输入，可输出 LLVM IR 或宿主对象文件。链接系统库和生成
+最终可执行文件仍由 `clang` 完成，因而编译器本身不复制链接器职责。
 
 ## 4. 分层结构
 
 | 层 | 主要文件 | 职责 |
 | --- | --- | --- |
 | 命令行驱动 | `src/main.cpp` | 参数解析、文件生命周期、组织 parse/codegen、退出码 |
-| 词法层 | `src/lexer.l` | 字符流到 token、注释和行号维护 |
+| 词法层 | `src/lexer.l` | 字符流到 token、注释和行列维护 |
 | 语法层 | `src/parser.y` | token 到 AST、运算符优先级、错误恢复入口 |
 | 中间表示 | `include/ast.hpp` | 表达式、语句、顶层声明及其所有权模型 |
 | 类型系统 | `include/type.hpp` | 显式类型对象、结构等价与类型格式化 |
@@ -62,14 +62,15 @@ flowchart LR
 | LLVM API 后端 | `src/codegen.cpp` | LLVM IRBuilder、verifier、PassBuilder、TargetMachine |
 | 文本 IR 后端 | `src/text_codegen.cpp` | SSA 临时值/标签管理、LLVM IR 序列化 |
 | 构建与验证 | `CMakeLists.txt`, `tests/` | 代码生成、后端选择、源码到原生程序的闭环测试 |
+| 故障工具 | `tests/fuzz_driver.cpp`, `tools/` | fuzz 入口、pass 快照和 delta-debug 最小化 |
 
 ## 5. 编译流水线
 
 ### 5.1 驱动阶段
 
-驱动解析 `lumenc <input.lm> [-o <output.ll>]`，打开输入文件并初始化 Flex scanner。
-解析成功后取得 `Program` AST，交给统一的 `CodeGenerator` 接口。指定 `-o` 时写文件，
-否则写标准输出。命令行用法错误返回 2，编译或 I/O 错误返回 1，成功返回 0。
+驱动解析输入、`--emit-llvm/-c`、`-O0...O3`、`-g` 与 `--save-pass-ir`，打开文件并
+初始化 Flex scanner。解析成功后取得 `Program` AST，交给统一的 `CodeGenerator` 接口。
+IR 未指定 `-o` 时写标准输出。命令行用法错误返回 2，编译或 I/O 错误返回 1，成功返回 0。
 
 ### 5.2 前端阶段
 
@@ -178,8 +179,14 @@ LLVM API 与文本 IR 两种构建中运行。
 再使用当前 LLVM 版本支持的 `-print-before/-print-after` 或较新版本的
 `-mllvm -print-changed` 缩小到具体 pass。
 
-## 10. 演进方向
+## 10. 故障定位闭环
 
-推荐按依赖顺序扩展：
+`--save-pass-ir <dir>` 通过 PassBuilder instrumentation callback 观察 pass；初始和最终
+module 总会保存，中间只在 IR 文本确实变化时保存，文件名携带顺序号和 pass 名称。
+`tools/minimize_failure.py` 对源码或 IR 做逐行 delta debugging，用用户提供的非零退出
+predicate 判定故障是否保留。
 
-1. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。
+`lumen_frontend_fuzzer` 把任意字节喂给 scanner、parser、semantic 和 constant folder，
+由 libFuzzer 配合 ASan/UBSan 查找崩溃。`tests/differential.sh` 将同一组合法程序分别交给
+LLVM API 与文本后端，再比较原生程序 stdout 和退出码，覆盖“IR 不同但语义应相同”的
+回归。三者形成“发现—定位 pass—最小化输入”的闭环。

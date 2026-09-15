@@ -38,3 +38,14 @@ if ! grep -Fq -- "-g requires an LLVM development package" \
     echo "textual backend debug-info diagnostic was not specific" >&2
     exit 1
 fi
+
+if "$compiler" --save-pass-ir "$output_dir/pass-ir" "$source_file" \
+    -o "$output_dir/snapshot.ll" 2>"$output_dir/snapshot.txt"; then
+    echo "textual backend unexpectedly accepted --save-pass-ir" >&2
+    exit 1
+fi
+if ! grep -Fq -- "--save-pass-ir requires an LLVM development package" \
+    "$output_dir/snapshot.txt"; then
+    echo "textual backend snapshot diagnostic was not specific" >&2
+    exit 1
+fi

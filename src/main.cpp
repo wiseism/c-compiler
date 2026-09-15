@@ -21,7 +21,8 @@ extern std::vector<std::string> parseDiagnostics;
 namespace {
 void usage(const char* argv0) {
     std::cerr << "usage: " << argv0
-              << " [--emit-llvm | -c] [-g] [-O0|-O1|-O2|-O3] <input.lm> [-o output]\n";
+              << " [--emit-llvm | -c] [-g] [-O0|-O1|-O2|-O3]"
+                 " [--save-pass-ir dir] <input.lm> [-o output]\n";
 }
 } // namespace
 
@@ -50,6 +51,14 @@ int main(int argc, char** argv) {
         }
         if (arg == "-g") {
             codegenOptions.debugInfo = true;
+            continue;
+        }
+        if (arg == "--save-pass-ir") {
+            if (++i == argc) {
+                std::cerr << "error: --save-pass-ir requires a directory\n";
+                return 2;
+            }
+            codegenOptions.passSnapshotDirectory = argv[i];
             continue;
         }
         if (arg.size() == 3 && arg[0] == '-' && arg[1] == 'O' &&
