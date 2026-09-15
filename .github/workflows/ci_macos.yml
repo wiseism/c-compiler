@@ -41,11 +41,11 @@ jobs:
       - name: Select toolchain
         run: |
           llvm_prefix="$(brew --prefix '${{ matrix.llvm_formula }}')"
-          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
-          echo "CC=$llvm_prefix/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=$llvm_prefix/bin/clang++" >> "$GITHUB_ENV"
+          echo "CC=/usr/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+          echo "LLVM_ROOT=$llvm_prefix" >> "$GITHUB_ENV"
           echo "LLVM_DIR=$llvm_prefix/lib/cmake/llvm" >> "$GITHUB_ENV"
 
       - name: Show toolchain versions
@@ -54,12 +54,14 @@ jobs:
           ninja --version
           bison --version
           flex --version
-          clang --version
+          "$CC" --version
+          "$LLVM_ROOT/bin/llvm-config" --version
 
       - name: Configure
         run: |
           cmake -S . -B build-macos -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCLANG_EXECUTABLE=/usr/bin/clang \
             -DLLVM_DIR="$LLVM_DIR"
 
       - name: Build
