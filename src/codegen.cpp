@@ -26,7 +26,11 @@
 #include <llvm/Support/CodeGen.h>
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/Support/FileSystem.h>
+#if __has_include(<llvm/TargetParser/Host.h>)
+#include <llvm/TargetParser/Host.h>
+#else
 #include <llvm/Support/Host.h>
+#endif
 #if __has_include(<llvm/MC/TargetRegistry.h>)
 #include <llvm/MC/TargetRegistry.h>
 #else
@@ -200,7 +204,8 @@ struct CodeGenerator::Impl {
         llvm::PassInstrumentationCallbacks instrumentation;
         if (!options.passSnapshotDirectory.empty()) {
             instrumentation.registerAfterPassCallback(
-                [this](llvm::StringRef passName, llvm::Any) {
+                [this](llvm::StringRef passName, llvm::Any,
+                       const llvm::PreservedAnalyses&) {
                     if (errorMessage.empty()) writeSnapshot(passName.str());
                 });
         }
