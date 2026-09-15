@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
     }
 
     lumen::CodeGenerator generator(std::filesystem::path(inputPath).filename().string());
-    if (!generator.generate(*parsedProgram)) {
+    if (!generator.generate(semanticAnalyzer.typedProgram())) {
         std::cerr << "error: " << generator.error() << '\n';
         return 1;
     }

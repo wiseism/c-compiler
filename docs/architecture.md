@@ -29,7 +29,8 @@ flowchart LR
     Flex --> Bison[Bison Parser]
     Bison --> AST[所有权 AST]
     AST --> Semantic[独立语义分析与类型标注]
-    Semantic --> Fold[常量折叠]
+    Semantic --> TIR[共享 TypedProgram]
+    TIR --> Fold[常量折叠]
     Fold --> Select{LLVM SDK 可用?}
     Select -->|是| API[LLVM C++ API 后端]
     Select -->|否| Text[文本 LLVM IR 后端]
@@ -52,6 +53,7 @@ flowchart LR
 | 中间表示 | `include/ast.hpp` | 表达式、语句、顶层声明及其所有权模型 |
 | 类型系统 | `include/type.hpp` | 显式类型对象、结构等价与类型格式化 |
 | 语义层 | `src/semantic.cpp` | 名字解析、签名/类型/返回路径检查、AST 类型标注 |
+| Typed IR | `include/typed_ir.hpp` | 稳定符号/函数 ID、唯一顶层描述和已解析引用绑定 |
 | 优化层 | `src/constant_fold.cpp` | AST 常量折叠、全局常量 initializer 验证 |
 | 后端接口 | `include/codegen.hpp` | 隐藏具体 LLVM 实现的稳定 PImpl 边界 |
 | LLVM API 后端 | `src/codegen.cpp` | LLVM IRBuilder、控制流生成、LLVM verifier |
@@ -88,7 +90,9 @@ Flex 负责最长匹配和关键字分类。Bison 负责：
 `i1`，再零扩展为 `i32`，保持语言层表达式类型一致。`&&`、`||` 通过基本块和 PHI
 节点实现短路求值。
 
-语义成功后运行独立常量折叠 pass。它按 32 位位模式折叠纯算术、比较和逻辑表达式，
+semantic pass 同时产生零拷贝 `TypedProgram`：结构化语句仍引用 AST，但名字和调用全部
+绑定到稳定 ID，函数与全局声明被规范化成唯一描述。语义成功后运行独立常量折叠 pass。
+它按 32 位位模式折叠纯算术、比较和逻辑表达式，
 保留除零/有符号除法溢出的运行时语义，并利用短路规则安全消除不可执行的 RHS。全局
 initializer 必须在该 pass 后成为单个整数常量。
 
@@ -101,8 +105,9 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 - 找不到 LLVM 开发包：编译 `src/text_codegen.cpp`，直接序列化等价 LLVM IR；测试仍
   要求 `clang` 接受 IR 并成功执行。
 
-两种后端实现同一个 `CodeGenerator` ABI，不同时链接，避免符号冲突。LLVM API 后端
-是生产首选；文本后端用于教学、最小环境和后端差分测试，不改变语言语义。
+两种后端实现同一个 `CodeGenerator` ABI，并只接受 `const TypedProgram&`，不同时链接，
+避免符号冲突。LLVM API 后端是生产首选；文本后端用于教学、最小环境和后端差分测试，
+不改变语言语义。名字解析、签名合并和诊断只在共享 semantic/typed IR 层发生。
 
 ## 6. 核心不变量
 
@@ -117,6 +122,7 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 9. 全局变量只有一个定义，可有多个兼容声明；函数和全局变量共享顶层名字空间。
 10. 数组下标在运行时检查 `[0, length)`；指针访问检查非空，失败统一进入
     `llvm.trap`。
+11. 后端不得以字符串重新解析名字；所有引用必须通过 typed IR 的稳定 ID 解析。
 
 ## 7. 错误处理策略
 
@@ -164,7 +170,6 @@ LLVM API 与文本 IR 两种构建中运行。
 
 推荐按依赖顺序扩展：
 
-1. 将后端降级为共享 typed IR 的纯 lowering，消除双实现漂移风险。
-2. 接入 LLVM PassBuilder、优化等级、目标机和对象文件输出。
-3. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
-4. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。
+1. 接入 LLVM PassBuilder、优化等级、目标机和对象文件输出。
+2. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
+3. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。

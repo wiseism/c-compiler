@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.hpp"
+#include "typed_ir.hpp"
 
 #include <memory>
 #include <string>
@@ -17,6 +18,7 @@ public:
 
     bool analyze(Program& program);
     const std::string& error() const;
+    const TypedProgram& typedProgram() const;
 
 private:
     struct Impl;

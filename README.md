@@ -81,6 +81,7 @@ src/parser.y      Bison 文法与 AST 构造
 include/ast.hpp   所有权明确的 AST
 include/type.hpp  显式、可组合的类型对象
 src/semantic.cpp  独立语义分析与 AST 类型标注
+include/typed_ir.hpp  两个后端共享的已解析 typed IR
 src/constant_fold.cpp  保持短路语义的 AST 常量折叠
 src/codegen.cpp   LLVM C++ API IR 生成
 src/main.cpp      命令行驱动

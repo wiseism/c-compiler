@@ -13,18 +13,31 @@ struct FunctionInfo {
     TypePtr returnType;
     std::vector<TypePtr> parameterTypes;
     bool hasDefinition = false;
+    FunctionId id = 0;
+};
+
+struct Binding {
+    TypePtr type;
+    SymbolId symbol;
 };
 
 } // namespace
 
 struct SemanticAnalyzer::Impl {
     std::unordered_map<std::string, FunctionInfo> functions;
-    std::unordered_map<std::string, TypePtr> globals;
+    std::unordered_map<std::string, Binding> globals;
     std::unordered_map<std::string, bool> topLevelIsFunction;
     std::unordered_map<std::string, bool> globalDefinitions;
-    std::vector<std::unordered_map<std::string, TypePtr>> scopes;
+    std::vector<std::unordered_map<std::string, Binding>> scopes;
     TypePtr currentReturnType;
     std::string errorMessage;
+    TypedProgram typed;
+
+    SymbolId addSymbol(SymbolKind kind, const std::string& name, const TypePtr& type) {
+        const SymbolId id = static_cast<SymbolId>(typed.symbols.size());
+        typed.symbols.push_back(TypedSymbol{id, kind, name, type});
+        return id;
+    }
 
     bool fail(int line, const std::string& message) {
         if (errorMessage.empty()) {
@@ -38,13 +51,13 @@ struct SemanticAnalyzer::Impl {
         return nullptr;
     }
 
-    TypePtr lookup(const std::string& name) const {
+    const Binding* lookup(const std::string& name) const {
         for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
             const auto found = scope->find(name);
-            if (found != scope->end()) return found->second;
+            if (found != scope->end()) return &found->second;
         }
         const auto global = globals.find(name);
-        return global == globals.end() ? nullptr : global->second;
+        return global == globals.end() ? nullptr : &global->second;
     }
 
     bool expectType(const TypePtr& actual, const TypePtr& expected,
@@ -95,8 +108,10 @@ struct SemanticAnalyzer::Impl {
         } else if (dynamic_cast<NullExpr*>(&expr)) {
             result = Type::nullPointer();
         } else if (auto* variable = dynamic_cast<VariableExpr*>(&expr)) {
-            result = lookup(variable->name);
-            if (!result) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            const Binding* binding = lookup(variable->name);
+            if (!binding) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            result = binding->type;
+            typed.variableBindings[variable] = binding->symbol;
         } else if (auto* assign = dynamic_cast<AssignExpr*>(&expr)) {
             if (!isLValue(*assign->target)) {
                 return failExpr(expr.line, "left side of assignment is not assignable");
@@ -211,6 +226,7 @@ struct SemanticAnalyzer::Impl {
                                argument->toString() + "'");
                 }
             }
+            typed.callBindings[call] = found->second.id;
             result = found->second.returnType;
         } else if (auto* index = dynamic_cast<IndexExpr*>(&expr)) {
             TypePtr base = analyzeExpr(*index->base);
@@ -306,7 +322,11 @@ struct SemanticAnalyzer::Impl {
                                            "' with '" + initializer->toString() + "'");
                 }
             }
-            currentScope.emplace(declaration->name, declaration->declaredType);
+            const SymbolId symbol = addSymbol(SymbolKind::Local, declaration->name,
+                                              declaration->declaredType);
+            currentScope.emplace(declaration->name,
+                                 Binding{declaration->declaredType, symbol});
+            typed.localDeclarations[declaration] = symbol;
             return true;
         }
         if (auto* returnStmt = dynamic_cast<ReturnStmt*>(&stmt)) {
@@ -365,10 +385,21 @@ struct SemanticAnalyzer::Impl {
         topLevelIsFunction[name] = true;
         std::vector<TypePtr> parameterTypes;
         parameterTypes.reserve(params.size());
-        for (const auto& parameter : params) parameterTypes.push_back(parameter.type);
+        for (const auto& parameter : params) {
+            if (parameter.type->kind() == TypeKind::Void) {
+                return fail(parameter.line, "parameter '" + parameter.name +
+                                            "' cannot have type void");
+            }
+            parameterTypes.push_back(parameter.type);
+        }
 
+        const FunctionId id = static_cast<FunctionId>(typed.functions.size());
         auto [position, inserted] = functions.emplace(
-            name, FunctionInfo{returnType, parameterTypes, false});
+            name, FunctionInfo{returnType, parameterTypes, false, id});
+        if (inserted) {
+            typed.functions.push_back(TypedFunction{id, name, returnType, parameterTypes,
+                                                    nullptr, {}});
+        }
         if (!inserted) {
             const FunctionInfo& existing = position->second;
             bool compatible = sameType(existing.returnType, returnType) &&
@@ -400,16 +431,28 @@ struct SemanticAnalyzer::Impl {
         topLevelIsFunction[global.name] = false;
 
         const auto existing = globals.find(global.name);
-        if (existing != globals.end() && !sameType(existing->second, global.declaredType)) {
+        if (existing != globals.end() && !sameType(existing->second.type, global.declaredType)) {
             return fail(global.line, "conflicting declaration of global variable '" +
                                      global.name + "'");
         }
-        globals[global.name] = global.declaredType;
+        if (existing == globals.end()) {
+            const SymbolId symbol = addSymbol(SymbolKind::Global, global.name,
+                                              global.declaredType);
+            globals.emplace(global.name, Binding{global.declaredType, symbol});
+            typed.globals.push_back(TypedGlobal{symbol, global.name, global.declaredType, nullptr});
+        }
         if (!global.isExtern) {
             if (globalDefinitions[global.name]) {
                 return fail(global.line, "redefinition of global variable '" + global.name + "'");
             }
             globalDefinitions[global.name] = true;
+            const SymbolId symbol = globals.at(global.name).symbol;
+            for (auto& typedGlobal : typed.globals) {
+                if (typedGlobal.symbol == symbol) {
+                    typedGlobal.definition = &global;
+                    break;
+                }
+            }
         }
         return true;
     }
@@ -432,6 +475,9 @@ struct SemanticAnalyzer::Impl {
         scopes.clear();
         scopes.emplace_back();
         currentReturnType = function.returnType;
+        TypedFunction& typedFunction = typed.functions.at(functions.at(function.name).id);
+        typedFunction.definition = &function;
+        typedFunction.parameterSymbols.clear();
         for (const auto& parameter : function.params) {
             if (parameter.type->kind() == TypeKind::Void) {
                 return fail(parameter.line, "parameter '" + parameter.name +
@@ -440,7 +486,10 @@ struct SemanticAnalyzer::Impl {
             if (scopes.back().count(parameter.name)) {
                 return fail(parameter.line, "duplicate parameter '" + parameter.name + "'");
             }
-            scopes.back().emplace(parameter.name, parameter.type);
+            const SymbolId symbol = addSymbol(SymbolKind::Parameter, parameter.name,
+                                              parameter.type);
+            scopes.back().emplace(parameter.name, Binding{parameter.type, symbol});
+            typedFunction.parameterSymbols.push_back(symbol);
         }
 
         bool definitelyReturns = false;
@@ -458,6 +507,8 @@ struct SemanticAnalyzer::Impl {
         globals.clear();
         topLevelIsFunction.clear();
         globalDefinitions.clear();
+        typed = TypedProgram{};
+        typed.source = &program;
         for (auto& declaration : program.declarations) {
             if (auto* prototype = dynamic_cast<Prototype*>(declaration.get())) {
                 if (!registerFunction(prototype->name, prototype->returnType, prototype->params,
@@ -488,5 +539,6 @@ SemanticAnalyzer::~SemanticAnalyzer() = default;
 
 bool SemanticAnalyzer::analyze(Program& program) { return impl_->analyze(program); }
 const std::string& SemanticAnalyzer::error() const { return impl_->errorMessage; }
+const TypedProgram& SemanticAnalyzer::typedProgram() const { return impl_->typed; }
 
 } // namespace lumen

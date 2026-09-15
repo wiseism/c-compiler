@@ -18,7 +18,6 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -31,8 +30,8 @@ struct CodeGenerator::Impl {
     llvm::LLVMContext context;
     llvm::Module module;
     llvm::IRBuilder<> builder;
-    std::vector<std::unordered_map<std::string, llvm::Value*>> scopes;
-    std::unordered_set<std::string> definitions;
+    const TypedProgram* typedProgram = nullptr;
+    std::unordered_map<SymbolId, llvm::Value*> storage;
     std::string errorMessage;
 
     llvm::Type* intType() { return llvm::Type::getInt32Ty(context); }
@@ -75,12 +74,11 @@ struct CodeGenerator::Impl {
         return entryBuilder.CreateAlloca(llvmType(type), nullptr, name);
     }
 
-    llvm::Value* lookup(const std::string& name) {
-        for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
-            const auto found = scope->find(name);
-            if (found != scope->end()) return found->second;
-        }
-        return module.getNamedGlobal(name);
+    llvm::Value* lookup(const VariableExpr& variable) {
+        const auto binding = typedProgram->variableBindings.find(&variable);
+        if (binding == typedProgram->variableBindings.end()) return nullptr;
+        const auto found = storage.find(binding->second);
+        return found == storage.end() ? nullptr : found->second;
     }
 
     llvm::Value* asBool(llvm::Value* value) {
@@ -120,64 +118,46 @@ struct CodeGenerator::Impl {
                        "boundscheck");
     }
 
-    llvm::Function* declareFunction(const TypePtr& returnType, const std::string& name,
-                                    const std::vector<Parameter>& params, int line) {
-        if (llvm::Function* existing = module.getFunction(name)) {
-            if (existing->arg_size() != params.size()) {
-                fail(line, "conflicting declaration of function '" + name + "'");
-                return nullptr;
-            }
-            return existing;
-        }
-
+    llvm::Function* declareFunction(const TypedFunction& typedFunction) {
         std::vector<llvm::Type*> parameterTypes;
-        parameterTypes.reserve(params.size());
-        for (const auto& parameter : params) parameterTypes.push_back(llvmType(parameter.type));
-        auto* type = llvm::FunctionType::get(llvmType(returnType), parameterTypes, false);
+        parameterTypes.reserve(typedFunction.parameterTypes.size());
+        for (const TypePtr& parameter : typedFunction.parameterTypes) {
+            parameterTypes.push_back(llvmType(parameter));
+        }
+        auto* type = llvm::FunctionType::get(llvmType(typedFunction.returnType),
+                                             parameterTypes, false);
         auto* function = llvm::Function::Create(type, llvm::Function::ExternalLinkage,
-                                                name, module);
+                                                typedFunction.name, module);
         std::size_t index = 0;
-        for (auto& argument : function->args()) argument.setName(params[index++].name);
+        for (auto& argument : function->args()) {
+            if (typedFunction.definition) {
+                argument.setName(typedFunction.definition->params[index].name);
+            }
+            ++index;
+        }
         return function;
     }
 
-    bool declareGlobal(const GlobalVar& global) {
-        llvm::GlobalVariable* variable = module.getNamedGlobal(global.name);
-        if (!variable) {
-            llvm::Type* type = llvmType(global.declaredType);
-            llvm::Constant* initializer = nullptr;
-            if (!global.isExtern) {
-                const auto* number = dynamic_cast<const NumberExpr*>(global.init.get());
-                if (number) {
-                    initializer = llvm::ConstantInt::get(intType(),
-                        static_cast<std::uint64_t>(number->value), true);
-                } else {
-                    initializer = llvm::Constant::getNullValue(type);
-                }
-            }
-            new llvm::GlobalVariable(module, type, false,
-                                     llvm::GlobalValue::ExternalLinkage,
-                                     initializer, global.name);
-            return true;
+    void declareGlobal(const TypedGlobal& global) {
+        llvm::Type* type = llvmType(global.type);
+        llvm::Constant* initializer = nullptr;
+        if (global.definition) {
+            const auto* number = dynamic_cast<const NumberExpr*>(global.definition->init.get());
+            initializer = number
+                ? static_cast<llvm::Constant*>(llvm::ConstantInt::get(
+                      intType(), static_cast<std::uint64_t>(number->value), true))
+                : llvm::Constant::getNullValue(type);
         }
-        if (!global.isExtern) {
-            if (variable->hasInitializer()) {
-                return fail(global.line, "redefinition of global variable '" + global.name + "'");
-            }
-            const auto* number = dynamic_cast<const NumberExpr*>(global.init.get());
-            llvm::Constant* initializer = number
-                ? static_cast<llvm::Constant*>(llvm::ConstantInt::get(intType(),
-                      static_cast<std::uint64_t>(number->value), true))
-                : llvm::Constant::getNullValue(llvmType(global.declaredType));
-            variable->setInitializer(initializer);
-        }
-        return true;
+        auto* variable = new llvm::GlobalVariable(
+            module, type, false, llvm::GlobalValue::ExternalLinkage,
+            initializer, global.name);
+        storage[global.symbol] = variable;
     }
 
     llvm::Value* emitAddress(const Expr& expr) {
         if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
-            llvm::Value* slot = lookup(variable->name);
-            if (!slot) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            llvm::Value* slot = lookup(*variable);
+            if (!slot) return failExpr(expr.line, "internal error: missing typed storage binding");
             return slot;
         }
         if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
@@ -311,13 +291,8 @@ struct CodeGenerator::Impl {
             return result;
         }
         if (const auto* call = dynamic_cast<const CallExpr*>(&expr)) {
-            llvm::Function* callee = module.getFunction(call->callee);
-            if (!callee) return failExpr(expr.line, "unknown function '" + call->callee + "'");
-            if (callee->arg_size() != call->args.size()) {
-                return failExpr(expr.line, "function '" + call->callee + "' expects " +
-                                 std::to_string(callee->arg_size()) + " argument(s), got " +
-                                 std::to_string(call->args.size()));
-            }
+            const FunctionId functionId = typedProgram->callBindings.at(call);
+            llvm::Function* callee = module.getFunction(typedProgram->function(functionId).name);
             std::vector<llvm::Value*> arguments;
             arguments.reserve(call->args.size());
             for (const auto& argument : call->args) {
@@ -331,8 +306,7 @@ struct CodeGenerator::Impl {
         return failExpr(expr.line, "internal error: unknown expression node");
     }
 
-    bool emitBlock(const BlockStmt& block, bool introduceScope) {
-        if (introduceScope) scopes.emplace_back();
+    bool emitBlock(const BlockStmt& block) {
         bool ok = true;
         for (const auto& statement : block.body) {
             if (builder.GetInsertBlock()->getTerminator()) break;
@@ -341,29 +315,21 @@ struct CodeGenerator::Impl {
                 break;
             }
         }
-        if (introduceScope) scopes.pop_back();
         return ok;
     }
 
     bool emitScoped(const Stmt& statement) {
-        scopes.emplace_back();
-        const bool ok = emitStmt(statement);
-        scopes.pop_back();
-        return ok;
+        return emitStmt(statement);
     }
 
     bool emitStmt(const Stmt& stmt) {
         if (const auto* block = dynamic_cast<const BlockStmt*>(&stmt)) {
-            return emitBlock(*block, true);
+            return emitBlock(*block);
         }
         if (const auto* expression = dynamic_cast<const ExprStmt*>(&stmt)) {
             return emitExpr(*expression->expr) != nullptr;
         }
         if (const auto* declaration = dynamic_cast<const VarDeclStmt*>(&stmt)) {
-            auto& currentScope = scopes.back();
-            if (currentScope.count(declaration->name)) {
-                return fail(stmt.line, "redeclaration of variable '" + declaration->name + "'");
-            }
             llvm::Function* function = builder.GetInsertBlock()->getParent();
             llvm::AllocaInst* slot = createAlloca(function, declaration->declaredType,
                                                   declaration->name);
@@ -372,7 +338,7 @@ struct CodeGenerator::Impl {
                 : llvm::Constant::getNullValue(llvmType(declaration->declaredType));
             if (!initialValue) return false;
             builder.CreateStore(initialValue, slot);
-            currentScope.emplace(declaration->name, slot);
+            storage[typedProgram->localDeclarations.at(declaration)] = slot;
             return true;
         }
         if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&stmt)) {
@@ -433,32 +399,24 @@ struct CodeGenerator::Impl {
         return fail(stmt.line, "internal error: unknown statement node");
     }
 
-    bool emitFunction(const Function& astFunction) {
-        llvm::Function* function = module.getFunction(astFunction.name);
-        if (!function) return fail(astFunction.line, "internal error: missing function declaration");
-        if (!function->empty() || !definitions.insert(astFunction.name).second) {
-            return fail(astFunction.line, "redefinition of function '" + astFunction.name + "'");
-        }
+    bool emitFunction(const TypedFunction& typedFunction) {
+        const Function& astFunction = *typedFunction.definition;
+        llvm::Function* function = module.getFunction(typedFunction.name);
 
         auto* entry = llvm::BasicBlock::Create(context, "entry", function);
         builder.SetInsertPoint(entry);
-        scopes.clear();
-        scopes.emplace_back();
 
         std::size_t index = 0;
         for (auto& argument : function->args()) {
             const std::string& parameterName = astFunction.params[index++].name;
-            if (scopes.back().count(parameterName)) {
-                return fail(astFunction.line, "duplicate parameter '" + parameterName + "'");
-            }
             argument.setName(parameterName);
             llvm::AllocaInst* slot = createAlloca(
                 function, astFunction.params[index - 1].type, parameterName);
             builder.CreateStore(&argument, slot);
-            scopes.back().emplace(parameterName, slot);
+            storage[typedFunction.parameterSymbols[index - 1]] = slot;
         }
 
-        if (!emitBlock(*astFunction.body, false)) return false;
+        if (!emitBlock(*astFunction.body)) return false;
         if (!builder.GetInsertBlock()->getTerminator()) {
             if (astFunction.returnType->kind() == TypeKind::Void) builder.CreateRetVoid();
             else return fail(astFunction.line, "function '" + astFunction.name +
@@ -475,23 +433,15 @@ struct CodeGenerator::Impl {
         return true;
     }
 
-    bool generate(const Program& program) {
-        for (const auto& declaration : program.declarations) {
-            if (const auto* prototype = dynamic_cast<const Prototype*>(declaration.get())) {
-                if (!declareFunction(prototype->returnType, prototype->name,
-                                     prototype->params, prototype->line)) return false;
-            } else if (const auto* function = dynamic_cast<const Function*>(declaration.get())) {
-                if (!declareFunction(function->returnType, function->name,
-                                     function->params, function->line)) return false;
-            } else if (const auto* global = dynamic_cast<const GlobalVar*>(declaration.get())) {
-                if (!declareGlobal(*global)) return false;
-            }
+    bool generate(const TypedProgram& program) {
+        typedProgram = &program;
+        storage.clear();
+        for (const TypedFunction& function : program.functions) {
+            declareFunction(function);
         }
-
-        for (const auto& declaration : program.declarations) {
-            if (const auto* function = dynamic_cast<const Function*>(declaration.get())) {
-                if (!emitFunction(*function)) return false;
-            }
+        for (const TypedGlobal& global : program.globals) declareGlobal(global);
+        for (const TypedFunction& function : program.functions) {
+            if (function.definition && !emitFunction(function)) return false;
         }
 
         std::string verificationError;
@@ -510,7 +460,7 @@ CodeGenerator::CodeGenerator(std::string moduleName)
 
 CodeGenerator::~CodeGenerator() = default;
 
-bool CodeGenerator::generate(const Program& program) {
+bool CodeGenerator::generate(const TypedProgram& program) {
     return impl_->generate(program);
 }
 

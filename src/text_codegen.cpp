@@ -7,21 +7,10 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace lumen {
-
-namespace {
-
-struct FunctionSignature {
-    TypePtr returnType;
-    std::vector<TypePtr> parameterTypes;
-    bool hasDefinition = false;
-};
-
-} // namespace
 
 struct CodeGenerator::Impl {
     explicit Impl(std::string name) : moduleName(std::move(name)) {}
@@ -29,13 +18,11 @@ struct CodeGenerator::Impl {
     std::string moduleName;
     std::string moduleIR;
     std::string errorMessage;
-    std::unordered_map<std::string, FunctionSignature> functions;
-    std::unordered_map<std::string, const GlobalVar*> globals;
-    std::vector<std::string> globalOrder;
+    const TypedProgram* typedProgram = nullptr;
+    std::unordered_map<SymbolId, std::string> storage;
 
     std::ostringstream body;
     std::ostringstream allocas;
-    std::vector<std::unordered_map<std::string, std::string>> scopes;
     int nextTemporary = 0;
     int nextSlot = 0;
     int nextLabel = 0;
@@ -91,12 +78,11 @@ struct CodeGenerator::Impl {
         terminated = true;
     }
 
-    std::string lookup(const std::string& name) const {
-        for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
-            const auto found = scope->find(name);
-            if (found != scope->end()) return found->second;
-        }
-        return globals.count(name) ? "@" + name : std::string();
+    std::string lookup(const VariableExpr& variable) const {
+        const auto binding = typedProgram->variableBindings.find(&variable);
+        if (binding == typedProgram->variableBindings.end()) return {};
+        const auto found = storage.find(binding->second);
+        return found == storage.end() ? std::string() : found->second;
     }
 
     std::string toBool(const std::string& value, const TypePtr& type) {
@@ -173,8 +159,10 @@ struct CodeGenerator::Impl {
 
     std::string emitAddress(const Expr& expr) {
         if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
-            const std::string slot = lookup(variable->name);
-            if (slot.empty()) return failExpr(expr.line, "unknown variable '" + variable->name + "'");
+            const std::string slot = lookup(*variable);
+            if (slot.empty()) {
+                return failExpr(expr.line, "internal error: missing typed storage binding");
+            }
             return slot;
         }
         if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
@@ -311,37 +299,28 @@ struct CodeGenerator::Impl {
             return widened;
         }
         if (const auto* call = dynamic_cast<const CallExpr*>(&expr)) {
-            const auto function = functions.find(call->callee);
-            if (function == functions.end()) {
-                return failExpr(expr.line, "unknown function '" + call->callee + "'");
-            }
-            if (function->second.parameterTypes.size() != call->args.size()) {
-                return failExpr(expr.line, "function '" + call->callee + "' expects " +
-                                std::to_string(function->second.parameterTypes.size()) +
-                                " argument(s), got " +
-                                std::to_string(call->args.size()));
-            }
+            const TypedFunction& function = typedProgram->function(
+                typedProgram->callBindings.at(call));
             std::string arguments;
             for (std::size_t i = 0; i < call->args.size(); ++i) {
                 const std::string value = emitExpr(*call->args[i]);
                 if (value.empty()) return {};
                 if (i != 0) arguments += ", ";
-                arguments += irType(function->second.parameterTypes[i]) + " " + value;
+                arguments += irType(function.parameterTypes[i]) + " " + value;
             }
-            if (function->second.returnType->kind() == TypeKind::Void) {
-                instruction("call void @" + call->callee + "(" + arguments + ")");
+            if (function.returnType->kind() == TypeKind::Void) {
+                instruction("call void @" + function.name + "(" + arguments + ")");
                 return "void";
             }
             const std::string result = temporary();
-            instruction(result + " = call " + irType(function->second.returnType) + " @" +
-                        call->callee + "(" + arguments + ")");
+            instruction(result + " = call " + irType(function.returnType) + " @" +
+                        function.name + "(" + arguments + ")");
             return result;
         }
         return failExpr(expr.line, "internal error: unknown expression node");
     }
 
-    bool emitBlock(const BlockStmt& block, bool introduceScope) {
-        if (introduceScope) scopes.emplace_back();
+    bool emitBlock(const BlockStmt& block) {
         bool ok = true;
         for (const auto& statement : block.body) {
             if (terminated) break;
@@ -350,29 +329,21 @@ struct CodeGenerator::Impl {
                 break;
             }
         }
-        if (introduceScope) scopes.pop_back();
         return ok;
     }
 
     bool emitScoped(const Stmt& statement) {
-        scopes.emplace_back();
-        const bool ok = emitStmt(statement);
-        scopes.pop_back();
-        return ok;
+        return emitStmt(statement);
     }
 
     bool emitStmt(const Stmt& stmt) {
         if (const auto* block = dynamic_cast<const BlockStmt*>(&stmt)) {
-            return emitBlock(*block, true);
+            return emitBlock(*block);
         }
         if (const auto* expression = dynamic_cast<const ExprStmt*>(&stmt)) {
             return !emitExpr(*expression->expr).empty();
         }
         if (const auto* declaration = dynamic_cast<const VarDeclStmt*>(&stmt)) {
-            auto& scope = scopes.back();
-            if (scope.count(declaration->name)) {
-                return fail(stmt.line, "redeclaration of variable '" + declaration->name + "'");
-            }
             const std::string type = irType(declaration->declaredType);
             const std::string value = declaration->init ? emitExpr(*declaration->init)
                 : (isPointerType(declaration->declaredType) ? "null" :
@@ -381,7 +352,7 @@ struct CodeGenerator::Impl {
             const std::string slot = "%v" + std::to_string(nextSlot++);
             allocas << "  " << slot << " = alloca " << type << "\n";
             instruction("store " + type + " " + value + ", " + type + "* " + slot);
-            scope.emplace(declaration->name, slot);
+            storage[typedProgram->localDeclarations.at(declaration)] = slot;
             return true;
         }
         if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&stmt)) {
@@ -450,33 +421,12 @@ struct CodeGenerator::Impl {
         return fail(stmt.line, "internal error: unknown statement node");
     }
 
-    bool registerFunction(const TypePtr& returnType, const std::string& name,
-                          const std::vector<Parameter>& params,
-                          bool definition, int line) {
-        std::vector<TypePtr> parameterTypes;
-        for (const auto& parameter : params) parameterTypes.push_back(parameter.type);
-        auto [position, inserted] = functions.emplace(
-            name, FunctionSignature{returnType, parameterTypes, false});
-        if (!inserted && (position->second.parameterTypes.size() != params.size() ||
-                          !sameType(position->second.returnType, returnType))) {
-            return fail(line, "conflicting declaration of function '" + name + "'");
-        }
-        if (definition) {
-            if (position->second.hasDefinition) {
-                return fail(line, "redefinition of function '" + name + "'");
-            }
-            position->second.hasDefinition = true;
-        }
-        return true;
-    }
-
-    bool emitFunction(const Function& function, std::ostringstream& output) {
+    bool emitFunction(const TypedFunction& typedFunction, std::ostringstream& output) {
+        const Function& function = *typedFunction.definition;
         body.str({});
         body.clear();
         allocas.str({});
         allocas.clear();
-        scopes.clear();
-        scopes.emplace_back();
         nextTemporary = 0;
         nextSlot = 0;
         nextLabel = 0;
@@ -485,10 +435,6 @@ struct CodeGenerator::Impl {
 
         std::string parameters;
         for (std::size_t i = 0; i < function.params.size(); ++i) {
-            const std::string& name = function.params[i].name;
-            if (scopes.back().count(name)) {
-                return fail(function.line, "duplicate parameter '" + name + "'");
-            }
             if (i != 0) parameters += ", ";
             const std::string argument = "%arg" + std::to_string(i);
             const std::string slot = "%v" + std::to_string(nextSlot++);
@@ -497,10 +443,10 @@ struct CodeGenerator::Impl {
             allocas << "  " << slot << " = alloca " << type << "\n";
             body << "  store " << type << ' ' << argument << ", " << type << "* "
                  << slot << '\n';
-            scopes.back().emplace(name, slot);
+            storage[typedFunction.parameterSymbols[i]] = slot;
         }
 
-        if (!emitBlock(*function.body, false)) return false;
+        if (!emitBlock(*function.body)) return false;
         if (!terminated) {
             if (function.returnType->kind() == TypeKind::Void) instruction("ret void");
             else return fail(function.line, "function '" + function.name +
@@ -513,71 +459,54 @@ struct CodeGenerator::Impl {
         return true;
     }
 
-    bool generate(const Program& program) {
+    bool generate(const TypedProgram& program) {
         errorMessage.clear();
-        functions.clear();
-        globals.clear();
-        globalOrder.clear();
+        typedProgram = &program;
+        storage.clear();
         usesTrap = false;
-        for (const auto& declaration : program.declarations) {
-            if (const auto* prototype = dynamic_cast<const Prototype*>(declaration.get())) {
-                if (!registerFunction(prototype->returnType, prototype->name,
-                                      prototype->params, false, prototype->line)) return false;
-            } else if (const auto* function = dynamic_cast<const Function*>(declaration.get())) {
-                if (!registerFunction(function->returnType, function->name,
-                                      function->params, true, function->line)) return false;
-            } else if (const auto* global = dynamic_cast<const GlobalVar*>(declaration.get())) {
-                if (!globals.count(global->name)) globalOrder.push_back(global->name);
-                if (!global->isExtern || !globals.count(global->name)) globals[global->name] = global;
-            }
-        }
 
         std::ostringstream declarations;
-        std::unordered_set<std::string> emittedDeclarations;
-        for (const auto& declaration : program.declarations) {
-            const auto* prototype = dynamic_cast<const Prototype*>(declaration.get());
-            if (!prototype || functions.at(prototype->name).hasDefinition ||
-                !emittedDeclarations.insert(prototype->name).second) continue;
-            declarations << "declare " << irType(prototype->returnType)
-                         << " @" << prototype->name << '(';
-            for (std::size_t i = 0; i < prototype->params.size(); ++i) {
+        for (const TypedFunction& function : program.functions) {
+            if (function.definition) continue;
+            declarations << "declare " << irType(function.returnType)
+                         << " @" << function.name << '(';
+            for (std::size_t i = 0; i < function.parameterTypes.size(); ++i) {
                 if (i != 0) declarations << ", ";
-                declarations << irType(prototype->params[i].type);
+                declarations << irType(function.parameterTypes[i]);
             }
             declarations << ")\n";
         }
-        if (!emittedDeclarations.empty()) declarations << '\n';
+        if (!declarations.str().empty()) declarations << '\n';
 
         std::ostringstream globalDefinitions;
-        for (const std::string& name : globalOrder) {
-            const GlobalVar* global = globals.at(name);
-            const std::string type = irType(global->declaredType);
-            globalDefinitions << '@' << name << " = ";
-            if (global->isExtern) {
+        for (const TypedGlobal& global : program.globals) {
+            const std::string type = irType(global.type);
+            globalDefinitions << '@' << global.name << " = ";
+            if (!global.definition) {
                 globalDefinitions << "external global " << type << "\n";
             } else {
-                const auto* initializer = dynamic_cast<const NumberExpr*>(global->init.get());
+                const auto* initializer = dynamic_cast<const NumberExpr*>(
+                    global.definition->init.get());
                 std::string value;
                 if (initializer) {
                     value = std::to_string(static_cast<std::int32_t>(
                         static_cast<std::uint32_t>(initializer->value)));
-                } else if (isPointerType(global->declaredType)) {
+                } else if (isPointerType(global.type)) {
                     value = "null";
-                } else if (isArrayType(global->declaredType)) {
+                } else if (isArrayType(global.type)) {
                     value = "zeroinitializer";
                 } else {
                     value = "0";
                 }
                 globalDefinitions << "global " << type << ' ' << value << '\n';
             }
+            storage[global.symbol] = "@" + global.name;
         }
-        if (!globalOrder.empty()) globalDefinitions << '\n';
+        if (!program.globals.empty()) globalDefinitions << '\n';
 
         std::ostringstream definitions;
-        for (const auto& declaration : program.declarations) {
-            if (const auto* function = dynamic_cast<const Function*>(declaration.get())) {
-                if (!emitFunction(*function, definitions)) return false;
-            }
+        for (const TypedFunction& function : program.functions) {
+            if (function.definition && !emitFunction(function, definitions)) return false;
         }
 
         std::ostringstream module;
@@ -594,7 +523,7 @@ CodeGenerator::CodeGenerator(std::string moduleName)
 
 CodeGenerator::~CodeGenerator() = default;
 
-bool CodeGenerator::generate(const Program& program) { return impl_->generate(program); }
+bool CodeGenerator::generate(const TypedProgram& program) { return impl_->generate(program); }
 
 bool CodeGenerator::writeIR(const std::string& outputPath) const {
     std::ofstream output(outputPath);

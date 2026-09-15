@@ -160,6 +160,22 @@ semantic pass 在解析完成、任何 LLVM 状态建立之前运行。第一遍
 `return` 或 then/else 均确定返回的 `if` 才能证明返回；`while` 暂不因常量条件被视为
 确定返回。
 
+### 4.1 共享 TypedProgram
+
+分析成功时，semantic pass 还构造零拷贝 high-level typed IR：
+
+- `TypedSymbol` 为全局、参数和局部提供全 translation unit 唯一的 `SymbolId`；
+- `TypedFunction` 合并所有兼容原型，保存唯一 `FunctionId`、完整签名、可选定义和参数
+  symbol ID；
+- `TypedGlobal` 合并 extern 声明与唯一变量定义；
+- `variableBindings` 将每个 `VariableExpr*` 解析到 `SymbolId`；
+- `callBindings` 将每个 `CallExpr*` 解析到 `FunctionId`；
+- `localDeclarations` 将声明节点解析到其存储 symbol。
+
+AST 继续承载源码结构和所有权，typed IR 只保存不可歧义的语义事实，因此不会复制大型
+语法树。`CodeGenerator::generate` 仅接受 `const TypedProgram&`，从类型系统上阻止未做
+语义分析的 AST 直接进入后端。
+
 ## 5. 名字与作用域
 
 ### 5.1 函数符号
@@ -317,17 +333,18 @@ terminated。非 void 函数结束时当前 block 仍未终止则报告 missing 
 `include/codegen.hpp` 使用 PImpl 隔离 LLVM 头文件，两个实现提供完全相同的方法：
 
 ```cpp
-bool generate(const Program&);
+bool generate(const TypedProgram&);
 bool writeIR(const std::string&) const;
 void printIR() const;
 const std::string& error() const;
 ```
 
-API 后端直接持有 `LLVMContext`、`Module` 和 `IRBuilder`；文本后端持有函数签名表、
-临时值计数器、标签计数器及输出 stream。CMake 在配置时只选择一个实现源文件。
+API 后端直接持有 `LLVMContext`、`Module` 和 `IRBuilder`；文本后端持有临时值计数器、
+标签计数器及输出 stream。二者都以 typed IR 的 symbol/call binding 查找实体，不维护
+字符串作用域或重复检查签名。CMake 在配置时只选择一个实现源文件。
 
-已知维护风险是两份实现同时包含语义检查逻辑。任何语言扩展必须同步修改两端并让 CI
-分别运行相同测试；长期方案是抽取共享 semantic pass 和自有 typed IR。
+两份实现仍分别负责 LLVM 指令序列化，因此任何 lowering 扩展必须让 CI 在两个后端运行
+相同测试；语义规则和诊断则只有共享 semantic pass 一个事实来源。
 
 ## 10. 构建系统
 

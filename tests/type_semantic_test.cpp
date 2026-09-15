@@ -30,6 +30,9 @@ int main() {
     SemanticAnalyzer analyzer;
     assert(analyzer.analyze(program));
     assert(sameType(numberNode->inferredType, Type::int32()));
+    assert(analyzer.typedProgram().functions.size() == 1);
+    assert(analyzer.typedProgram().functions.front().name == "main");
+    assert(analyzer.typedProgram().functions.front().definition != nullptr);
 
     auto product = std::make_unique<BinaryExpr>(
         "*", std::make_unique<NumberExpr>(6, 1),
@@ -50,5 +53,24 @@ int main() {
     assert(foldedNumber != nullptr);
     assert(foldedNumber->value == 42);
     assert(sameType(foldedNumber->inferredType, Type::int32()));
+
+    auto parameterReference = std::make_unique<VariableExpr>("input", 2);
+    VariableExpr* parameterReferenceNode = parameterReference.get();
+    std::vector<std::unique_ptr<Stmt>> identityStatements;
+    identityStatements.push_back(
+        std::make_unique<ReturnStmt>(std::move(parameterReference), 2));
+    Program identityProgram;
+    std::vector<Parameter> identityParameters;
+    identityParameters.emplace_back(Type::int32(), "input", 1);
+    identityProgram.declarations.push_back(std::make_unique<Function>(
+        Type::int32(), "identity", std::move(identityParameters),
+        std::make_unique<BlockStmt>(std::move(identityStatements), 1), 1));
+    assert(analyzer.analyze(identityProgram));
+    const TypedProgram& typed = analyzer.typedProgram();
+    assert(typed.functions.size() == 1);
+    assert(typed.functions.front().parameterSymbols.size() == 1);
+    const SymbolId parameterId = typed.functions.front().parameterSymbols.front();
+    assert(typed.symbol(parameterId).kind == SymbolKind::Parameter);
+    assert(typed.variableBindings.at(parameterReferenceNode) == parameterId);
     return 0;
 }
