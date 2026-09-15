@@ -15,7 +15,7 @@
 - `+ - * / %`、比较、`!`，以及真正短路求值的 `&&` / `||`
 - `if` / `else`、`while`、代码块和 `return`
 - `//` 与 `/* ... */` 注释
-- 带源码行号的语法和语义诊断
+- 带源码行列号、错误恢复和一次性多错误聚合的诊断
 
 非 `void` 函数必须显式 `return`；`void` 函数允许自然结束。数组下标执行上下界检查，
 指针解引用与下标执行空检查，失败时触发 `llvm.trap`。裸指针不携带长度，因此非空指针
@@ -54,11 +54,13 @@ LLVM API 后端还支持优化和直接输出目标机对象文件：
 ```bash
 ./build/lumenc -O2 --emit-llvm examples/fibonacci.lm -o fibonacci.ll
 ./build/lumenc -O3 -c examples/fibonacci.lm -o fibonacci.o
+./build/lumenc -g -c examples/fibonacci.lm -o fibonacci.debug.o
 clang fibonacci.o -o fibonacci
 ```
 
-优化等级为 `-O0`（默认）、`-O1`、`-O2`、`-O3`。PassBuilder 与对象文件输出需要
-LLVM 开发包；文本 IR fallback 会给出明确诊断。
+优化等级为 `-O0`（默认）、`-O1`、`-O2`、`-O3`。`-g` 将 AST 的行列位置写入
+LLVM debug metadata，并让对象文件携带 DWARF。PassBuilder、对象文件和调试信息输出
+需要 LLVM 开发包；文本 IR fallback 会给出明确诊断。
 
 省略 `-o` 时 LLVM IR 写到标准输出：
 

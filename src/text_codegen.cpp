@@ -467,6 +467,10 @@ struct CodeGenerator::Impl {
             errorMessage = "-O requires an LLVM development package and the LLVM API backend";
             return false;
         }
+        if (options.debugInfo) {
+            errorMessage = "-g requires an LLVM development package and the LLVM API backend";
+            return false;
+        }
         typedProgram = &program;
         storage.clear();
         usesTrap = false;

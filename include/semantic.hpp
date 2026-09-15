@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace lumen {
 
@@ -18,6 +19,7 @@ public:
 
     bool analyze(Program& program);
     const std::string& error() const;
+    const std::vector<std::string>& diagnostics() const;
     const TypedProgram& typedProgram() const;
 
 private:

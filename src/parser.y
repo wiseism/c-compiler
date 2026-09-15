@@ -11,6 +11,7 @@ int yylex();
 void yyerror(const char* message);
 
 std::unique_ptr<lumen::Program> parsedProgram;
+std::vector<std::string> parseDiagnostics;
 
 template <typename T>
 static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
@@ -81,6 +82,7 @@ translation_unit
 external_list
     : %empty { $$ = new std::vector<lumen::TopLevel*>(); }
     | external_list external_declaration { $1->push_back($2); $$ = $1; }
+    | external_list error ';' { yyerrok; $$ = $1; }
     ;
 
 external_declaration
@@ -93,7 +95,8 @@ external_declaration
 function_definition
     : type_specifier IDENTIFIER '(' parameter_list_opt ')' block {
           $$ = new lumen::Function(std::move(*$1), std::move(*$2), std::move(*$4),
-                                   std::unique_ptr<lumen::BlockStmt>($6), @1.first_line);
+                                   std::unique_ptr<lumen::BlockStmt>($6), @1.first_line,
+                                   @1.first_column);
           delete $1;
           delete $2;
           delete $4;
@@ -103,7 +106,7 @@ function_definition
 extern_declaration
     : EXTERN type_specifier IDENTIFIER '(' parameter_list_opt ')' ';' {
           $$ = new lumen::Prototype(std::move(*$2), std::move(*$3),
-                                    std::move(*$5), true, @1.first_line);
+                                    std::move(*$5), true, @1.first_line, @1.first_column);
           delete $2;
           delete $3;
           delete $5;
@@ -113,7 +116,7 @@ extern_declaration
 function_declaration
     : type_specifier IDENTIFIER '(' parameter_list_opt ')' ';' {
           $$ = new lumen::Prototype(std::move(*$1), std::move(*$2),
-                                    std::move(*$4), false, @1.first_line);
+                                    std::move(*$4), false, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
           delete $4;
@@ -123,33 +126,34 @@ function_declaration
 global_declaration
     : type_specifier IDENTIFIER ';' {
           $$ = new lumen::GlobalVar(std::move(*$1), std::move(*$2), nullptr,
-                                    false, @1.first_line);
+                                    false, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
       }
     | type_specifier IDENTIFIER '=' expression ';' {
           $$ = new lumen::GlobalVar(std::move(*$1), std::move(*$2),
-                                    std::unique_ptr<lumen::Expr>($4), false, @1.first_line);
+                                    std::unique_ptr<lumen::Expr>($4), false, @1.first_line,
+                                    @1.first_column);
           delete $1;
           delete $2;
       }
     | EXTERN type_specifier IDENTIFIER ';' {
           $$ = new lumen::GlobalVar(std::move(*$2), std::move(*$3), nullptr,
-                                    true, @1.first_line);
+                                    true, @1.first_line, @1.first_column);
           delete $2;
           delete $3;
       }
     | type_specifier IDENTIFIER '[' NUMBER ']' ';' {
           $$ = new lumen::GlobalVar(
               lumen::Type::arrayOf(std::move(*$1), static_cast<std::size_t>($4)),
-              std::move(*$2), nullptr, false, @1.first_line);
+              std::move(*$2), nullptr, false, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
       }
     | EXTERN type_specifier IDENTIFIER '[' NUMBER ']' ';' {
           $$ = new lumen::GlobalVar(
               lumen::Type::arrayOf(std::move(*$2), static_cast<std::size_t>($5)),
-              std::move(*$3), nullptr, true, @1.first_line);
+              std::move(*$3), nullptr, true, @1.first_line, @1.first_column);
           delete $2;
           delete $3;
       }
@@ -177,12 +181,12 @@ parameter_list_opt
 parameter_list
     : type_specifier IDENTIFIER {
           $$ = new std::vector<lumen::Parameter>();
-          $$->emplace_back(std::move(*$1), std::move(*$2), @2.first_line);
+          $$->emplace_back(std::move(*$1), std::move(*$2), @2.first_line, @2.first_column);
           delete $1;
           delete $2;
       }
     | parameter_list ',' type_specifier IDENTIFIER {
-          $1->emplace_back(std::move(*$3), std::move(*$4), @4.first_line);
+          $1->emplace_back(std::move(*$3), std::move(*$4), @4.first_line, @4.first_column);
           delete $3;
           delete $4;
           $$ = $1;
@@ -190,7 +194,9 @@ parameter_list
     ;
 
 block
-    : '{' statement_list '}' { $$ = new lumen::BlockStmt(adopt($2), @1.first_line); }
+    : '{' statement_list '}' {
+          $$ = new lumen::BlockStmt(adopt($2), @1.first_line, @1.first_column);
+      }
     ;
 
 statement_list
@@ -205,25 +211,30 @@ statement
     | if_stmt         { $$ = $1; }
     | while_stmt      { $$ = $1; }
     | expression_stmt { $$ = $1; }
+    | error ';' {
+          yyerrok;
+          $$ = new lumen::BlockStmt({}, @1.first_line, @1.first_column);
+      }
     ;
 
 variable_decl
     : type_specifier IDENTIFIER ';' {
           $$ = new lumen::VarDeclStmt(std::move(*$1), std::move(*$2),
-                                      nullptr, @1.first_line);
+                                      nullptr, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
       }
     | type_specifier IDENTIFIER '=' expression ';' {
           $$ = new lumen::VarDeclStmt(std::move(*$1), std::move(*$2),
-                                      std::unique_ptr<lumen::Expr>($4), @1.first_line);
+                                      std::unique_ptr<lumen::Expr>($4), @1.first_line,
+                                      @1.first_column);
           delete $1;
           delete $2;
       }
     | type_specifier IDENTIFIER '[' NUMBER ']' ';' {
           $$ = new lumen::VarDeclStmt(
               lumen::Type::arrayOf(std::move(*$1), static_cast<std::size_t>($4)),
-              std::move(*$2), nullptr, @1.first_line);
+              std::move(*$2), nullptr, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
       }
@@ -231,34 +242,41 @@ variable_decl
 
 return_stmt
     : RETURN ';' {
-          $$ = new lumen::ReturnStmt(nullptr, @1.first_line);
+          $$ = new lumen::ReturnStmt(nullptr, @1.first_line, @1.first_column);
       }
     | RETURN expression ';' {
-          $$ = new lumen::ReturnStmt(std::unique_ptr<lumen::Expr>($2), @1.first_line);
+          $$ = new lumen::ReturnStmt(std::unique_ptr<lumen::Expr>($2), @1.first_line,
+                                     @1.first_column);
       }
     ;
 
 if_stmt
     : IF '(' expression ')' statement %prec LOWER_THAN_ELSE {
           $$ = new lumen::IfStmt(std::unique_ptr<lumen::Expr>($3),
-                                 std::unique_ptr<lumen::Stmt>($5), nullptr, @1.first_line);
+                                 std::unique_ptr<lumen::Stmt>($5), nullptr, @1.first_line,
+                                 @1.first_column);
       }
     | IF '(' expression ')' statement ELSE statement {
           $$ = new lumen::IfStmt(std::unique_ptr<lumen::Expr>($3),
                                  std::unique_ptr<lumen::Stmt>($5),
-                                 std::unique_ptr<lumen::Stmt>($7), @1.first_line);
+                                 std::unique_ptr<lumen::Stmt>($7), @1.first_line,
+                                 @1.first_column);
       }
     ;
 
 while_stmt
     : WHILE '(' expression ')' statement {
           $$ = new lumen::WhileStmt(std::unique_ptr<lumen::Expr>($3),
-                                    std::unique_ptr<lumen::Stmt>($5), @1.first_line);
+                                    std::unique_ptr<lumen::Stmt>($5), @1.first_line,
+                                    @1.first_column);
       }
     ;
 
 expression_stmt
-    : expression ';' { $$ = new lumen::ExprStmt(std::unique_ptr<lumen::Expr>($1), @1.first_line); }
+    : expression ';' {
+          $$ = new lumen::ExprStmt(std::unique_ptr<lumen::Expr>($1), @1.first_line,
+                                   @1.first_column);
+      }
     ;
 
 expression
@@ -269,72 +287,75 @@ assignment
     : logical_or { $$ = $1; }
     | unary '=' assignment {
           $$ = new lumen::AssignExpr(std::unique_ptr<lumen::Expr>($1),
-                                     std::unique_ptr<lumen::Expr>($3), @2.first_line);
+                                     std::unique_ptr<lumen::Expr>($3), @2.first_line,
+                                     @2.first_column);
       }
     ;
 
 logical_or
     : logical_and { $$ = $1; }
-    | logical_or OR logical_and { $$ = new lumen::BinaryExpr("||", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
+    | logical_or OR logical_and { $$ = new lumen::BinaryExpr("||", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 logical_and
     : equality { $$ = $1; }
-    | logical_and AND equality { $$ = new lumen::BinaryExpr("&&", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
+    | logical_and AND equality { $$ = new lumen::BinaryExpr("&&", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 equality
     : relational { $$ = $1; }
-    | equality EQ relational { $$ = new lumen::BinaryExpr("==", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | equality NE relational { $$ = new lumen::BinaryExpr("!=", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
+    | equality EQ relational { $$ = new lumen::BinaryExpr("==", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | equality NE relational { $$ = new lumen::BinaryExpr("!=", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 relational
     : additive { $$ = $1; }
-    | relational '<' additive { $$ = new lumen::BinaryExpr("<", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | relational '>' additive { $$ = new lumen::BinaryExpr(">", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | relational LE additive  { $$ = new lumen::BinaryExpr("<=", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | relational GE additive  { $$ = new lumen::BinaryExpr(">=", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
+    | relational '<' additive { $$ = new lumen::BinaryExpr("<", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | relational '>' additive { $$ = new lumen::BinaryExpr(">", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | relational LE additive  { $$ = new lumen::BinaryExpr("<=", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | relational GE additive  { $$ = new lumen::BinaryExpr(">=", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 additive
     : multiplicative { $$ = $1; }
-    | additive '+' multiplicative { $$ = new lumen::BinaryExpr("+", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | additive '-' multiplicative { $$ = new lumen::BinaryExpr("-", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
+    | additive '+' multiplicative { $$ = new lumen::BinaryExpr("+", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | additive '-' multiplicative { $$ = new lumen::BinaryExpr("-", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 multiplicative
     : unary { $$ = $1; }
-    | multiplicative '*' unary { $$ = new lumen::BinaryExpr("*", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | multiplicative '/' unary { $$ = new lumen::BinaryExpr("/", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
-    | multiplicative '%' unary { $$ = new lumen::BinaryExpr("%", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line); }
+    | multiplicative '*' unary { $$ = new lumen::BinaryExpr("*", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | multiplicative '/' unary { $$ = new lumen::BinaryExpr("/", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | multiplicative '%' unary { $$ = new lumen::BinaryExpr("%", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 unary
     : postfix { $$ = $1; }
-    | '-' unary { $$ = new lumen::UnaryExpr("-", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
-    | '!' unary { $$ = new lumen::UnaryExpr("!", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
-    | '&' unary { $$ = new lumen::UnaryExpr("&", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
-    | '*' unary { $$ = new lumen::UnaryExpr("*", std::unique_ptr<lumen::Expr>($2), @1.first_line); }
+    | '-' unary { $$ = new lumen::UnaryExpr("-", std::unique_ptr<lumen::Expr>($2), @1.first_line, @1.first_column); }
+    | '!' unary { $$ = new lumen::UnaryExpr("!", std::unique_ptr<lumen::Expr>($2), @1.first_line, @1.first_column); }
+    | '&' unary { $$ = new lumen::UnaryExpr("&", std::unique_ptr<lumen::Expr>($2), @1.first_line, @1.first_column); }
+    | '*' unary { $$ = new lumen::UnaryExpr("*", std::unique_ptr<lumen::Expr>($2), @1.first_line, @1.first_column); }
     ;
 
 postfix
     : primary { $$ = $1; }
     | postfix '[' expression ']' {
           $$ = new lumen::IndexExpr(std::unique_ptr<lumen::Expr>($1),
-                                    std::unique_ptr<lumen::Expr>($3), @2.first_line);
+                                    std::unique_ptr<lumen::Expr>($3), @2.first_line,
+                                    @2.first_column);
       }
     ;
 
 primary
-    : NUMBER { $$ = new lumen::NumberExpr($1, @1.first_line); }
-    | NULLPTR { $$ = new lumen::NullExpr(@1.first_line); }
+    : NUMBER { $$ = new lumen::NumberExpr($1, @1.first_line, @1.first_column); }
+    | NULLPTR { $$ = new lumen::NullExpr(@1.first_line, @1.first_column); }
     | IDENTIFIER {
-          $$ = new lumen::VariableExpr(std::move(*$1), @1.first_line);
+          $$ = new lumen::VariableExpr(std::move(*$1), @1.first_line, @1.first_column);
           delete $1;
       }
     | IDENTIFIER '(' argument_list_opt ')' {
-          $$ = new lumen::CallExpr(std::move(*$1), adopt($3), @1.first_line);
+          $$ = new lumen::CallExpr(std::move(*$1), adopt($3), @1.first_line,
+                                   @1.first_column);
           delete $1;
       }
     | '(' expression ')' { $$ = $2; }
@@ -356,5 +377,8 @@ argument_list
 %%
 
 void yyerror(const char* message) {
-    std::cerr << "line " << yylloc.first_line << ": " << message << '\n';
+    std::string diagnostic = "line " + std::to_string(yylloc.first_line) + ":" +
+                             std::to_string(yylloc.first_column) + ": " + message;
+    parseDiagnostics.push_back(diagnostic);
+    std::cerr << diagnostic << '\n';
 }

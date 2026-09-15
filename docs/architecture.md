@@ -127,6 +127,8 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
     `llvm.trap`。
 11. 后端不得以字符串重新解析名字；所有引用必须通过 typed IR 的稳定 ID 解析。
 12. 优化前后均通过 module verifier；对象输出绑定明确的 target triple 和 data layout。
+13. 每个 AST 节点保留起始行列；`-g` 生成的指令位置与诊断位置来自同一份数据。
+14. 任何 parser/semantic 诊断都会阻止后端运行，即使错误恢复构造了占位节点。
 
 ## 7. 错误处理策略
 
@@ -143,8 +145,14 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 | 非恒定全局初始化 | constant-fold pass | `is not a constant expression` |
 | LLVM 结构不合法 | LLVM verifier | verifier 原始诊断 |
 
-当前节点保存起始行号，因此语法与语义错误均可关联源文件行。发生错误时停止生成，避免
-把部分有效的模块误写为成功结果。
+scanner 维护 token 的起始/结束行列，AST 节点保存起始位置。parser 在语句或顶层分号
+边界使用 Bison `error` token 恢复；semantic pass 在安全的语句和顶层边界继续检查，
+因此一次编译可返回多个独立诊断。存在任意诊断时都停止生成，避免把恢复后的占位 AST
+误写为成功结果。
+
+LLVM API 后端的 `-g` 用 `DIBuilder` 生成 compile unit、source file、subprogram、参数、
+局部变量与 `DILocation`，对象输出由 TargetMachine 保留为 DWARF。文本后端无法构建
+LLVM metadata graph，因此明确拒绝 `-g`。
 
 ## 8. 可移植性与版本策略
 
@@ -174,5 +182,4 @@ LLVM API 与文本 IR 两种构建中运行。
 
 推荐按依赖顺序扩展：
 
-1. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
-2. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。
+1. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。

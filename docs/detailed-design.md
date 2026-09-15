@@ -361,6 +361,22 @@ LLVM 目标代码生成接口要求，不影响中端使用新 PassBuilder。
 文本 IR 后端没有 LLVM library 可调用，因此只支持 `-O0 --emit-llvm`。对 `-O1...O3`
 和 `-c` 明确失败，禁止静默忽略用户请求。
 
+### 9.2 源位置、诊断恢复与调试信息
+
+Flex 的 `YY_USER_ACTION` 同时填写 Bison `YYLTYPE` 的 line/column；换行规则重置列计数。
+parser 把产生式关键 token 的起始位置复制到 AST，语义诊断因而采用稳定的
+`line:column` 格式。文法在 `error ';'` 处同步：函数体内插入不会进入后端的空占位
+statement，顶层则丢弃错误 declaration。驱动检查诊断集合，任何已恢复错误仍使编译失败。
+
+semantic analyzer 不再只保存第一条错误。顶层登记和 block statement 循环分别构成安全
+恢复边界；失败节点跳过依赖它的后续分析，其余节点继续产生诊断。只有诊断集合为空时，
+typed IR 才交给 constant folder 与后端。
+
+`-g` 启用 LLVM `DIBuilder`。每个定义创建 `DISubprogram`，参数和局部 alloca 关联
+`llvm.dbg.declare`，IRBuilder 在表达式/语句入口设置来自 AST 的 `DILocation`。所有函数
+完成后统一 `finalize()` metadata，再执行 module verifier；对象生成阶段由 TargetMachine
+写出 DWARF。fallback 对 `-g` 返回能力诊断。
+
 ## 10. 构建系统
 
 CMake 的生成依赖为：
@@ -385,10 +401,10 @@ parser.hpp -------------> lexer.cpp
 - 指针/数组：取址、解引用、参数、全局/局部数组和动态下标；
 - 内存陷阱：空指针、动态数组越界必须异常终止；
 - 静态边界：折叠后常量越界必须在编译期诊断；
-- LLVM 后端：验证 O2 IR 变化、目标 triple、O3 对象输出及链接后行为；
-- fallback 限制：验证不支持的优化/对象模式产生确定诊断；
-- 语义负例：未知变量、错误 arity、缺少 return；
-- 语法负例：检查失败退出码和源码行号。
+- LLVM 后端：验证 O2 IR 变化、目标 triple、O3 对象输出、debug metadata 及链接后行为；
+- fallback 限制：验证不支持的优化、对象和 `-g` 模式产生确定诊断；
+- 语义负例：未知变量、错误 arity、缺少 return，并验证一次聚合多个错误；
+- 语法负例：检查失败退出码、源码行列和分号边界恢复。
 
 CTest 通过 `$<TARGET_FILE:lumenc>` 传入实际构建产物，避免依赖 PATH。CI 为 LLVM API
 和 fallback 建立不同 build directory，防止 CMake cache 让后端选择结果互相污染。

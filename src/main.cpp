@@ -9,16 +9,19 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 extern FILE* yyin;
 extern int yylineno;
+extern int yycolumn;
 extern void yyrestart(FILE*);
 extern std::unique_ptr<lumen::Program> parsedProgram;
+extern std::vector<std::string> parseDiagnostics;
 
 namespace {
 void usage(const char* argv0) {
     std::cerr << "usage: " << argv0
-              << " [--emit-llvm | -c] [-O0|-O1|-O2|-O3] <input.lm> [-o output]\n";
+              << " [--emit-llvm | -c] [-g] [-O0|-O1|-O2|-O3] <input.lm> [-o output]\n";
 }
 } // namespace
 
@@ -43,6 +46,10 @@ int main(int argc, char** argv) {
         }
         if (arg == "-c" || arg == "--emit-object") {
             codegenOptions.emitObject = true;
+            continue;
+        }
+        if (arg == "-g") {
+            codegenOptions.debugInfo = true;
             continue;
         }
         if (arg.size() == 3 && arg[0] == '-' && arg[1] == 'O' &&
@@ -82,16 +89,21 @@ int main(int argc, char** argv) {
 
     yyin = input;
     yylineno = 1;
+    yycolumn = 1;
+    parseDiagnostics.clear();
+    parsedProgram.reset();
     yyrestart(input);
     const int parseResult = yyparse();
     std::fclose(input);
-    if (parseResult != 0 || !parsedProgram) {
+    if (parseResult != 0 || !parseDiagnostics.empty() || !parsedProgram) {
         return 1;
     }
 
     lumen::SemanticAnalyzer semanticAnalyzer;
     if (!semanticAnalyzer.analyze(*parsedProgram)) {
-        std::cerr << "error: " << semanticAnalyzer.error() << '\n';
+        for (const std::string& diagnostic : semanticAnalyzer.diagnostics()) {
+            std::cerr << "error: " << diagnostic << '\n';
+        }
         return 1;
     }
 
@@ -101,6 +113,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    codegenOptions.sourcePath = std::filesystem::absolute(inputPath).string();
     lumen::CodeGenerator generator(std::filesystem::path(inputPath).filename().string(),
                                    codegenOptions);
     if (!generator.generate(semanticAnalyzer.typedProgram())) {

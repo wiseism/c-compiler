@@ -27,3 +27,14 @@ if ! grep -Fq "object emission requires an LLVM development package" \
     echo "textual backend object diagnostic was not specific" >&2
     exit 1
 fi
+
+if "$compiler" -g "$source_file" -o "$output_dir/debug.ll" \
+    2>"$output_dir/debug.txt"; then
+    echo "textual backend unexpectedly accepted -g" >&2
+    exit 1
+fi
+if ! grep -Fq -- "-g requires an LLVM development package" \
+    "$output_dir/debug.txt"; then
+    echo "textual backend debug-info diagnostic was not specific" >&2
+    exit 1
+fi

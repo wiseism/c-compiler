@@ -51,6 +51,36 @@ if ! grep -q "line 3" "$output_dir/syntax_error.txt"; then
     exit 1
 fi
 
+if "$compiler" "$fixtures/multiple_syntax_errors.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/multiple_syntax_errors.txt"; then
+    echo "multiple syntax errors unexpectedly compiled" >&2
+    exit 1
+fi
+syntax_count=$(grep -c '^line [0-9][0-9]*:[0-9][0-9]*:' \
+    "$output_dir/multiple_syntax_errors.txt")
+if [[ $syntax_count -lt 2 ]]; then
+    echo "parser did not recover and report multiple line:column diagnostics" >&2
+    exit 1
+fi
+
+if "$compiler" "$fixtures/multiple_semantic_errors.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/multiple_semantic_errors.txt"; then
+    echo "multiple semantic errors unexpectedly compiled" >&2
+    exit 1
+fi
+for missing_name in first_missing second_missing third_missing; do
+    if ! grep -q "unknown variable '$missing_name'" \
+        "$output_dir/multiple_semantic_errors.txt"; then
+        echo "semantic analyzer did not aggregate $missing_name" >&2
+        exit 1
+    fi
+done
+if ! grep -Eq '^error: line [0-9]+:[0-9]+:' \
+    "$output_dir/multiple_semantic_errors.txt"; then
+    echo "semantic diagnostic did not include a source column" >&2
+    exit 1
+fi
+
 if "$compiler" "$fixtures/wrong_arity.lm" -o "$output_dir/bad.ll" \
     2>"$output_dir/wrong_arity.txt"; then
     echo "wrong-arity call unexpectedly compiled" >&2

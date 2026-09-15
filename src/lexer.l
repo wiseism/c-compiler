@@ -6,7 +6,13 @@
 #include <cstdlib>
 #include <string>
 
-#define YY_USER_ACTION yylloc.first_line = yylloc.last_line = yylineno;
+int yycolumn = 1;
+
+#define YY_USER_ACTION                                                        \
+    yylloc.first_line = yylloc.last_line = yylineno;                          \
+    yylloc.first_column = yycolumn;                                           \
+    yylloc.last_column = yycolumn + static_cast<int>(yyleng) - 1;             \
+    yycolumn += static_cast<int>(yyleng);
 %}
 
 %x COMMENT
@@ -15,11 +21,11 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 
 %%
 [ \t\r]+                  ;
-\n                        ;
+\n                        { yycolumn = 1; }
 "//"[^\n]*                ;
 "/*"                      BEGIN(COMMENT);
 <COMMENT>"*/"             BEGIN(INITIAL);
-<COMMENT>\n               ;
+<COMMENT>\n               { yycolumn = 1; }
 <COMMENT>.                ;
 <COMMENT><<EOF>>          return INVALID;
 

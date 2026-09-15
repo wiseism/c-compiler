@@ -1,0 +1,5 @@
+int main() {
+    first_missing = 1;
+    int value = second_missing;
+    return third_missing;
+}

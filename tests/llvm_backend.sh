@@ -37,3 +37,16 @@ if [[ $object_status -ne 42 || "$object_output" != "OK" ]]; then
     echo "object executable returned $object_status with output '$object_output'" >&2
     exit 1
 fi
+
+"$compiler" -g --emit-llvm "$source_file" -o "$output_dir/debug.ll" || exit 1
+if ! grep -q '!DICompileUnit' "$output_dir/debug.ll" ||
+   ! grep -Eq '!DILocation\(line: [0-9]+, column: [1-9][0-9]*' "$output_dir/debug.ll"; then
+    echo "debug IR is missing compile-unit or line:column metadata" >&2
+    exit 1
+fi
+
+"$compiler" -g -c "$source_file" -o "$output_dir/debug.o" || exit 1
+if [[ ! -s "$output_dir/debug.o" ]]; then
+    echo "debug object file is empty" >&2
+    exit 1
+fi

@@ -6,6 +6,8 @@
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
@@ -21,6 +23,7 @@
 #endif
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CodeGen.h>
+#include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Host.h>
 #if __has_include(<llvm/MC/TargetRegistry.h>)
@@ -34,6 +37,7 @@
 #include <llvm/Target/TargetOptions.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <optional>
 #include <system_error>
@@ -53,9 +57,64 @@ struct CodeGenerator::Impl {
     llvm::IRBuilder<> builder;
     CodegenOptions options;
     std::unique_ptr<llvm::TargetMachine> targetMachine;
+    std::unique_ptr<llvm::DIBuilder> debugBuilder;
+    llvm::DIFile* debugFile = nullptr;
+    llvm::DISubprogram* debugScope = nullptr;
     const TypedProgram* typedProgram = nullptr;
     std::unordered_map<SymbolId, llvm::Value*> storage;
     std::string errorMessage;
+
+    void initializeDebugInfo() {
+        if (!options.debugInfo) return;
+        debugBuilder = std::make_unique<llvm::DIBuilder>(module);
+        const std::filesystem::path path = options.sourcePath.empty()
+            ? std::filesystem::path(module.getName().str())
+            : std::filesystem::path(options.sourcePath);
+        debugFile = debugBuilder->createFile(path.filename().string(),
+                                             path.parent_path().string());
+        debugBuilder->createCompileUnit(llvm::dwarf::DW_LANG_C, debugFile, "lumenc",
+                                        options.optimizationLevel != 0, "", 0);
+        module.addModuleFlag(llvm::Module::Warning, "Debug Info Version",
+                             llvm::DEBUG_METADATA_VERSION);
+        module.addModuleFlag(llvm::Module::Warning, "Dwarf Version", 4);
+    }
+
+    llvm::DIType* debugType(const TypePtr& type) {
+        if (!debugBuilder || type->kind() == TypeKind::Void) return nullptr;
+        if (type->kind() == TypeKind::Int32) {
+            return debugBuilder->createBasicType("int", 32, llvm::dwarf::DW_ATE_signed);
+        }
+        if (type->kind() == TypeKind::Pointer) {
+            return debugBuilder->createPointerType(debugType(type->elementType()), 64);
+        }
+        if (type->kind() == TypeKind::Array) {
+            llvm::DIType* element = debugType(type->elementType());
+            llvm::Metadata* subrange = debugBuilder->getOrCreateSubrange(0, type->arrayLength());
+            return debugBuilder->createArrayType(
+                32 * type->arrayLength(), 32, element,
+                debugBuilder->getOrCreateArray({subrange}));
+        }
+        return nullptr;
+    }
+
+    void setDebugLocation(int line, int column) {
+        if (!debugScope) return;
+        builder.SetCurrentDebugLocation(llvm::DebugLoc::get(line, column, debugScope));
+    }
+
+    void declareDebugVariable(llvm::Value* storageValue, const std::string& name,
+                              const TypePtr& type, int line, int column,
+                              bool parameter = false, unsigned argument = 0) {
+        if (!debugBuilder || !debugScope) return;
+        llvm::DILocalVariable* variable = parameter
+            ? debugBuilder->createParameterVariable(debugScope, name, argument, debugFile,
+                                                    line, debugType(type), true)
+            : debugBuilder->createAutoVariable(debugScope, name, debugFile, line,
+                                               debugType(type), true);
+        debugBuilder->insertDeclare(storageValue, variable, debugBuilder->createExpression(),
+                                    llvm::DILocation::get(context, line, column, debugScope),
+                                    builder.GetInsertBlock());
+    }
 
     bool prepareTargetMachine() {
         if (targetMachine) return true;
@@ -302,6 +361,7 @@ struct CodeGenerator::Impl {
     }
 
     llvm::Value* emitExpr(const Expr& expr) {
+        setDebugLocation(expr.line, expr.column);
         if (const auto* number = dynamic_cast<const NumberExpr*>(&expr)) {
             return llvm::ConstantInt::get(intType(), static_cast<std::uint64_t>(number->value), true);
         }
@@ -405,6 +465,7 @@ struct CodeGenerator::Impl {
     }
 
     bool emitStmt(const Stmt& stmt) {
+        setDebugLocation(stmt.line, stmt.column);
         if (const auto* block = dynamic_cast<const BlockStmt*>(&stmt)) {
             return emitBlock(*block);
         }
@@ -421,6 +482,8 @@ struct CodeGenerator::Impl {
             if (!initialValue) return false;
             builder.CreateStore(initialValue, slot);
             storage[typedProgram->localDeclarations.at(declaration)] = slot;
+            declareDebugVariable(slot, declaration->name, declaration->declaredType,
+                                 declaration->line, declaration->column);
             return true;
         }
         if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&stmt)) {
@@ -488,6 +551,22 @@ struct CodeGenerator::Impl {
         auto* entry = llvm::BasicBlock::Create(context, "entry", function);
         builder.SetInsertPoint(entry);
 
+        if (debugBuilder) {
+            std::vector<llvm::Metadata*> types;
+            types.push_back(debugType(astFunction.returnType));
+            for (const Parameter& parameter : astFunction.params) {
+                types.push_back(debugType(parameter.type));
+            }
+            auto* functionType = debugBuilder->createSubroutineType(
+                debugBuilder->getOrCreateTypeArray(types));
+            debugScope = debugBuilder->createFunction(
+                debugFile, astFunction.name, astFunction.name, debugFile,
+                astFunction.line, functionType, astFunction.line,
+                llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
+            function->setSubprogram(debugScope);
+            setDebugLocation(astFunction.line, astFunction.column);
+        }
+
         std::size_t index = 0;
         for (auto& argument : function->args()) {
             const std::string& parameterName = astFunction.params[index++].name;
@@ -496,6 +575,9 @@ struct CodeGenerator::Impl {
                 function, astFunction.params[index - 1].type, parameterName);
             builder.CreateStore(&argument, slot);
             storage[typedFunction.parameterSymbols[index - 1]] = slot;
+            const Parameter& parameter = astFunction.params[index - 1];
+            declareDebugVariable(slot, parameterName, parameter.type, parameter.line,
+                                 parameter.column, true, static_cast<unsigned>(index));
         }
 
         if (!emitBlock(*astFunction.body)) return false;
@@ -505,19 +587,24 @@ struct CodeGenerator::Impl {
                                                "' may reach the end without returning");
         }
 
-        std::string verificationError;
-        llvm::raw_string_ostream stream(verificationError);
-        if (llvm::verifyFunction(*function, &stream)) {
-            stream.flush();
-            return fail(astFunction.line, "LLVM verification failed for '" +
-                                         astFunction.name + "': " + verificationError);
+        if (!debugBuilder) {
+            std::string verificationError;
+            llvm::raw_string_ostream stream(verificationError);
+            if (llvm::verifyFunction(*function, &stream)) {
+                stream.flush();
+                return fail(astFunction.line, "LLVM verification failed for '" +
+                                             astFunction.name + "': " + verificationError);
+            }
         }
+        debugScope = nullptr;
+        builder.SetCurrentDebugLocation(llvm::DebugLoc());
         return true;
     }
 
     bool generate(const TypedProgram& program) {
         typedProgram = &program;
         storage.clear();
+        initializeDebugInfo();
         for (const TypedFunction& function : program.functions) {
             declareFunction(function);
         }
@@ -525,6 +612,7 @@ struct CodeGenerator::Impl {
         for (const TypedFunction& function : program.functions) {
             if (function.definition && !emitFunction(function)) return false;
         }
+        if (debugBuilder) debugBuilder->finalize();
 
         std::string verificationError;
         llvm::raw_string_ostream stream(verificationError);

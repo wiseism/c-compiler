@@ -10,6 +10,8 @@ namespace lumen {
 struct CodegenOptions {
     unsigned optimizationLevel = 0;
     bool emitObject = false;
+    bool debugInfo = false;
+    std::string sourcePath;
 };
 
 class CodeGenerator {
