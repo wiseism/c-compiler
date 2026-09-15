@@ -6,6 +6,13 @@
 #include <cstdlib>
 #include <string>
 
+#ifdef _WIN32
+#define YY_NO_UNISTD_H
+#include <io.h>
+#define isatty _isatty
+#define fileno _fileno
+#endif
+
 int yycolumn = 1;
 
 #define YY_USER_ACTION                                                        \

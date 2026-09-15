@@ -1,0 +1,61 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: windows-latest / MSVC
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Preserve LF line endings
+        run: git config --global core.autocrlf input
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Bison and Flex
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          release: false
+          update: true
+          install: >-
+            bison
+            flex
+
+      - name: Show toolchain versions
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs['msys2-location'] }}
+        run: |
+          cmake --version
+          clang --version
+          & "$env:MSYS2_LOCATION\usr\bin\bison.exe" --version
+          & "$env:MSYS2_LOCATION\usr\bin\flex.exe" --version
+
+      - name: Configure
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs['msys2-location'] }}
+        run: |
+          $bison = "$env:MSYS2_LOCATION\usr\bin\bison.exe"
+          $flex = "$env:MSYS2_LOCATION\usr\bin\flex.exe"
+          cmake -S . -B build-windows `
+            -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE `
+            "-DBISON_EXECUTABLE=$bison" `
+            "-DFLEX_EXECUTABLE=$flex"
+
+      - name: Build
+        run: cmake --build build-windows --config Release --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-windows -C Release --output-on-failure
