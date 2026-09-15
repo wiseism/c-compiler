@@ -115,7 +115,7 @@ if(BUILD_TESTING)
                 ${PYTHON_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/minimize_failure.py
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/minimizer_input.txt
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/interesting_failure.sh
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/interesting_failure.py
                 ${CMAKE_CURRENT_BINARY_DIR}/minimized.ll
     )
 

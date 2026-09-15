@@ -7,7 +7,8 @@ input=$3
 predicate=$4
 output=$5
 
-"$python" "$minimizer" -o "$output" "$input" -- bash "$predicate" '{input}' || exit 1
+"$python" "$minimizer" -o "$output" "$input" -- \
+    "$python" "$predicate" '{input}' || exit 1
 if ! grep -q 'TRIGGER_FAILURE' "$output"; then
     echo "minimizer removed the interesting failure" >&2
     exit 1
