@@ -733,6 +733,8 @@ bool CodeGenerator::writeObject(const std::string& outputPath) {
     llvm::legacy::PassManager passes;
 #if LLVM_VERSION_MAJOR >= 18
     const auto fileType = llvm::CodeGenFileType::ObjectFile;
+#elif LLVM_VERSION_MAJOR >= 10
+    const auto fileType = llvm::CGFT_ObjectFile;
 #else
     const auto fileType = llvm::TargetMachine::CGFT_ObjectFile;
 #endif
