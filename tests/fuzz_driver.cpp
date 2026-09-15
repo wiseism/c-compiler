@@ -14,8 +14,9 @@
 struct yy_buffer_state;
 using YY_BUFFER_STATE = yy_buffer_state*;
 
-extern YY_BUFFER_STATE yy_scan_bytes(const char*, std::size_t);
+extern YY_BUFFER_STATE yy_scan_bytes(const char*, int);
 extern void yy_delete_buffer(YY_BUFFER_STATE);
+extern int yylex_destroy();
 extern int yyparse();
 extern int yylineno;
 extern int yycolumn;
@@ -33,9 +34,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     suppressParserDiagnostics = true;
     yylineno = 1;
     yycolumn = 1;
-    YY_BUFFER_STATE buffer = yy_scan_bytes(reinterpret_cast<const char*>(data), size);
+    YY_BUFFER_STATE buffer =
+        yy_scan_bytes(reinterpret_cast<const char*>(data), static_cast<int>(size));
     const int parseResult = yyparse();
     yy_delete_buffer(buffer);
+    yylex_destroy();
 
     if (parseResult == 0 && parseDiagnostics.empty() && parsedProgram) {
         lumen::SemanticAnalyzer analyzer;
