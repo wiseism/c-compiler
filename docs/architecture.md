@@ -34,7 +34,10 @@ flowchart LR
     Fold --> Select{LLVM SDK 可用?}
     Select -->|是| API[LLVM C++ API 后端]
     Select -->|否| Text[文本 LLVM IR 后端]
-    API --> IR[.ll / stdout]
+    API --> Passes[LLVM PassBuilder O0-O3]
+    Passes --> IR[.ll / stdout]
+    Passes --> TM[TargetMachine]
+    TM --> Object[原生 .o]
     Text --> IR
     IR --> LLVM[opt / clang]
     LLVM --> Native[原生程序]
@@ -56,7 +59,7 @@ flowchart LR
 | Typed IR | `include/typed_ir.hpp` | 稳定符号/函数 ID、唯一顶层描述和已解析引用绑定 |
 | 优化层 | `src/constant_fold.cpp` | AST 常量折叠、全局常量 initializer 验证 |
 | 后端接口 | `include/codegen.hpp` | 隐藏具体 LLVM 实现的稳定 PImpl 边界 |
-| LLVM API 后端 | `src/codegen.cpp` | LLVM IRBuilder、控制流生成、LLVM verifier |
+| LLVM API 后端 | `src/codegen.cpp` | LLVM IRBuilder、verifier、PassBuilder、TargetMachine |
 | 文本 IR 后端 | `src/text_codegen.cpp` | SSA 临时值/标签管理、LLVM IR 序列化 |
 | 构建与验证 | `CMakeLists.txt`, `tests/` | 代码生成、后端选择、源码到原生程序的闭环测试 |
 
@@ -101,7 +104,7 @@ initializer 必须在该 pass 后成为单个整数常量。
 CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 
 - 找到 LLVM 开发包：编译 `src/codegen.cpp`，链接 LLVM Core/Support，并在输出前运行
-  `verifyFunction` 和 `verifyModule`。
+  `verifyFunction` 和 `verifyModule`；按需构建 O1-O3 pass pipeline 和原生 TargetMachine。
 - 找不到 LLVM 开发包：编译 `src/text_codegen.cpp`，直接序列化等价 LLVM IR；测试仍
   要求 `clang` 接受 IR 并成功执行。
 
@@ -123,6 +126,7 @@ CMake 配置阶段使用 `find_package(LLVM CONFIG QUIET)`：
 10. 数组下标在运行时检查 `[0, length)`；指针访问检查非空，失败统一进入
     `llvm.trap`。
 11. 后端不得以字符串重新解析名字；所有引用必须通过 typed IR 的稳定 ID 解析。
+12. 优化前后均通过 module verifier；对象输出绑定明确的 target triple 和 data layout。
 
 ## 7. 错误处理策略
 
@@ -170,6 +174,5 @@ LLVM API 与文本 IR 两种构建中运行。
 
 推荐按依赖顺序扩展：
 
-1. 接入 LLVM PassBuilder、优化等级、目标机和对象文件输出。
-2. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
-3. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。
+1. 增加 debug metadata、源位置列号、错误恢复和多诊断聚合。
+2. 引入 fuzzing、差分测试和按 pass 保存 IR 的故障最小化工具。

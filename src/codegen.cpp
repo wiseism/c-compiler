@@ -1,5 +1,8 @@
 #include "codegen.hpp"
 
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -9,13 +12,30 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/PassManager.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#if LLVM_VERSION_MAJOR >= 12
+#include <llvm/Passes/OptimizationLevel.h>
+#endif
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Support/CodeGen.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Host.h>
+#if __has_include(<llvm/MC/TargetRegistry.h>)
+#include <llvm/MC/TargetRegistry.h>
+#else
+#include <llvm/Support/TargetRegistry.h>
+#endif
+#include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
 
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -24,15 +44,77 @@
 namespace lumen {
 
 struct CodeGenerator::Impl {
-    explicit Impl(std::string moduleName)
-        : module(std::move(moduleName), context), builder(context) {}
+    Impl(std::string moduleName, CodegenOptions requestedOptions)
+        : module(std::move(moduleName), context), builder(context),
+          options(requestedOptions) {}
 
     llvm::LLVMContext context;
     llvm::Module module;
     llvm::IRBuilder<> builder;
+    CodegenOptions options;
+    std::unique_ptr<llvm::TargetMachine> targetMachine;
     const TypedProgram* typedProgram = nullptr;
     std::unordered_map<SymbolId, llvm::Value*> storage;
     std::string errorMessage;
+
+    bool prepareTargetMachine() {
+        if (targetMachine) return true;
+        if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter()) {
+            errorMessage = "failed to initialize the native LLVM target";
+            return false;
+        }
+        const std::string triple = llvm::sys::getDefaultTargetTriple();
+        std::string targetError;
+        const llvm::Target* target = llvm::TargetRegistry::lookupTarget(triple, targetError);
+        if (!target) {
+            errorMessage = "cannot select target '" + triple + "': " + targetError;
+            return false;
+        }
+        llvm::TargetOptions targetOptions;
+#if LLVM_VERSION_MAJOR >= 16
+        targetMachine.reset(target->createTargetMachine(
+            triple, "generic", "", targetOptions, std::nullopt));
+#else
+        targetMachine.reset(target->createTargetMachine(
+            triple, "generic", "", targetOptions, llvm::None));
+#endif
+        if (!targetMachine) {
+            errorMessage = "failed to create target machine for '" + triple + "'";
+            return false;
+        }
+        module.setTargetTriple(triple);
+        module.setDataLayout(targetMachine->createDataLayout());
+        return true;
+    }
+
+    bool optimizeModule() {
+        if (options.optimizationLevel == 0) return true;
+        if (!prepareTargetMachine()) return false;
+
+        llvm::LoopAnalysisManager loopAnalyses;
+        llvm::FunctionAnalysisManager functionAnalyses;
+        llvm::CGSCCAnalysisManager cgsccAnalyses;
+        llvm::ModuleAnalysisManager moduleAnalyses;
+        llvm::PassBuilder passBuilder(targetMachine.get());
+        passBuilder.registerModuleAnalyses(moduleAnalyses);
+        passBuilder.registerCGSCCAnalyses(cgsccAnalyses);
+        passBuilder.registerFunctionAnalyses(functionAnalyses);
+        passBuilder.registerLoopAnalyses(loopAnalyses);
+        passBuilder.crossRegisterProxies(loopAnalyses, functionAnalyses,
+                                         cgsccAnalyses, moduleAnalyses);
+#if LLVM_VERSION_MAJOR >= 12
+        llvm::OptimizationLevel level = llvm::OptimizationLevel::O1;
+        if (options.optimizationLevel == 2) level = llvm::OptimizationLevel::O2;
+        if (options.optimizationLevel >= 3) level = llvm::OptimizationLevel::O3;
+#else
+        llvm::PassBuilder::OptimizationLevel level = llvm::PassBuilder::O1;
+        if (options.optimizationLevel == 2) level = llvm::PassBuilder::O2;
+        if (options.optimizationLevel >= 3) level = llvm::PassBuilder::O3;
+#endif
+        llvm::ModulePassManager passes = passBuilder.buildPerModuleDefaultPipeline(level);
+        passes.run(module, moduleAnalyses);
+        return true;
+    }
 
     llvm::Type* intType() { return llvm::Type::getInt32Ty(context); }
 
@@ -451,12 +533,22 @@ struct CodeGenerator::Impl {
             errorMessage = "LLVM module verification failed: " + verificationError;
             return false;
         }
+        if (!optimizeModule()) return false;
+        std::string optimizedVerificationError;
+        llvm::raw_string_ostream optimizedStream(optimizedVerificationError);
+        if (llvm::verifyModule(module, &optimizedStream)) {
+            optimizedStream.flush();
+            errorMessage = "LLVM module verification failed after optimization: " +
+                           optimizedVerificationError;
+            return false;
+        }
+        if (options.emitObject && !prepareTargetMachine()) return false;
         return true;
     }
 };
 
-CodeGenerator::CodeGenerator(std::string moduleName)
-    : impl_(std::make_unique<Impl>(std::move(moduleName))) {}
+CodeGenerator::CodeGenerator(std::string moduleName, CodegenOptions options)
+    : impl_(std::make_unique<Impl>(std::move(moduleName), options)) {}
 
 CodeGenerator::~CodeGenerator() = default;
 
@@ -472,6 +564,29 @@ bool CodeGenerator::writeIR(const std::string& outputPath) const {
         return false;
     }
     impl_->module.print(output, nullptr);
+    return true;
+}
+
+bool CodeGenerator::writeObject(const std::string& outputPath) {
+    if (!impl_->prepareTargetMachine()) return false;
+    std::error_code ec;
+    llvm::raw_fd_ostream output(outputPath, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+        impl_->errorMessage = "cannot write '" + outputPath + "': " + ec.message();
+        return false;
+    }
+    llvm::legacy::PassManager passes;
+#if LLVM_VERSION_MAJOR >= 18
+    const auto fileType = llvm::CodeGenFileType::ObjectFile;
+#else
+    const auto fileType = llvm::TargetMachine::CGFT_ObjectFile;
+#endif
+    if (impl_->targetMachine->addPassesToEmitFile(passes, output, nullptr, fileType)) {
+        impl_->errorMessage = "target machine cannot emit an object file";
+        return false;
+    }
+    passes.run(impl_->module);
+    output.flush();
     return true;
 }
 

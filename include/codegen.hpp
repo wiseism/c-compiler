@@ -7,9 +7,14 @@
 
 namespace lumen {
 
+struct CodegenOptions {
+    unsigned optimizationLevel = 0;
+    bool emitObject = false;
+};
+
 class CodeGenerator {
 public:
-    explicit CodeGenerator(std::string moduleName);
+    explicit CodeGenerator(std::string moduleName, CodegenOptions options = {});
     ~CodeGenerator();
 
     CodeGenerator(const CodeGenerator&) = delete;
@@ -17,6 +22,7 @@ public:
 
     bool generate(const TypedProgram& program);
     bool writeIR(const std::string& outputPath) const;
+    bool writeObject(const std::string& outputPath);
     void printIR() const;
     const std::string& error() const;
 

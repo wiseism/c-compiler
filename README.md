@@ -49,6 +49,17 @@ clang fibonacci.ll -o fibonacci
 ./fibonacci
 ```
 
+LLVM API 后端还支持优化和直接输出目标机对象文件：
+
+```bash
+./build/lumenc -O2 --emit-llvm examples/fibonacci.lm -o fibonacci.ll
+./build/lumenc -O3 -c examples/fibonacci.lm -o fibonacci.o
+clang fibonacci.o -o fibonacci
+```
+
+优化等级为 `-O0`（默认）、`-O1`、`-O2`、`-O3`。PassBuilder 与对象文件输出需要
+LLVM 开发包；文本 IR fallback 会给出明确诊断。
+
 省略 `-o` 时 LLVM IR 写到标准输出：
 
 ```bash

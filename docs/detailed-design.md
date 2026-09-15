@@ -138,7 +138,7 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 
 `main` 按以下顺序执行：
 
-1. 解析 `--help`、`--version`、`-o` 和唯一输入路径。
+1. 解析 `--help`、`--version`、`-o`、输出种类、优化等级和唯一输入路径。
 2. 使用 `fopen` 打开输入，设置 `yyin`，重置 `yylineno` 和 scanner buffer。
 3. 调用 `yyparse()`；全局 `parsedProgram` 只在完整 translation unit 归约后赋值。
 4. 关闭输入文件；解析失败立即返回。
@@ -146,7 +146,7 @@ Bison `%union` 使用裸指针，因为传统 C skeleton 不能直接安全承�
 6. 运行 `ConstantFolder`，折叠纯常量子树并验证全局 initializer。
 7. 以输入文件名作为 LLVM module name 创建 `CodeGenerator`。
 8. 调用 `generate()`；错误通过 `error()` 返回，并统一加 `error:` 前缀。
-9. 根据 `-o` 调用 `writeIR()` 或 `printIR()`。
+9. 根据 `--emit-llvm`/`-c` 调用 `writeIR()`、`printIR()` 或 `writeObject()`。
 
 编译器一次进程只处理一个 translation unit，因此 scanner/parser 的进程级状态不会跨
 文件复用。
@@ -346,6 +346,21 @@ API 后端直接持有 `LLVMContext`、`Module` 和 `IRBuilder`；文本后端�
 两份实现仍分别负责 LLVM 指令序列化，因此任何 lowering 扩展必须让 CI 在两个后端运行
 相同测试；语义规则和诊断则只有共享 semantic pass 一个事实来源。
 
+### 9.1 优化流水线与目标机
+
+LLVM API 后端在初始 module verifier 成功后，根据 `-O1/-O2/-O3` 将用户等级映射到
+LLVM `OptimizationLevel`，注册 Loop/Function/CGSCC/Module analysis manager，通过
+`crossRegisterProxies` 建立依赖，再运行 `buildPerModuleDefaultPipeline`。优化后再次运行
+module verifier，防止 pass 前提或自定义 IR 缺陷被误认为成功。
+
+需要优化或对象输出时初始化 native target/asm printer，以宿主 triple 创建
+`TargetMachine`，并把 triple 与 data layout 写入 module。`writeObject()` 使用 legacy
+codegen pass manager 调用 `addPassesToEmitFile(ObjectFile)`；这里的 legacy manager 是
+LLVM 目标代码生成接口要求，不影响中端使用新 PassBuilder。
+
+文本 IR 后端没有 LLVM library 可调用，因此只支持 `-O0 --emit-llvm`。对 `-O1...O3`
+和 `-c` 明确失败，禁止静默忽略用户请求。
+
 ## 10. 构建系统
 
 CMake 的生成依赖为：
@@ -370,6 +385,8 @@ parser.hpp -------------> lexer.cpp
 - 指针/数组：取址、解引用、参数、全局/局部数组和动态下标；
 - 内存陷阱：空指针、动态数组越界必须异常终止；
 - 静态边界：折叠后常量越界必须在编译期诊断；
+- LLVM 后端：验证 O2 IR 变化、目标 triple、O3 对象输出及链接后行为；
+- fallback 限制：验证不支持的优化/对象模式产生确定诊断；
 - 语义负例：未知变量、错误 arity、缺少 return；
 - 语法负例：检查失败退出码和源码行号。
 

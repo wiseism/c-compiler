@@ -13,11 +13,13 @@
 namespace lumen {
 
 struct CodeGenerator::Impl {
-    explicit Impl(std::string name) : moduleName(std::move(name)) {}
+    Impl(std::string name, CodegenOptions requestedOptions)
+        : moduleName(std::move(name)), options(requestedOptions) {}
 
     std::string moduleName;
     std::string moduleIR;
     std::string errorMessage;
+    CodegenOptions options;
     const TypedProgram* typedProgram = nullptr;
     std::unordered_map<SymbolId, std::string> storage;
 
@@ -461,6 +463,10 @@ struct CodeGenerator::Impl {
 
     bool generate(const TypedProgram& program) {
         errorMessage.clear();
+        if (options.optimizationLevel != 0) {
+            errorMessage = "-O requires an LLVM development package and the LLVM API backend";
+            return false;
+        }
         typedProgram = &program;
         storage.clear();
         usesTrap = false;
@@ -518,8 +524,8 @@ struct CodeGenerator::Impl {
     }
 };
 
-CodeGenerator::CodeGenerator(std::string moduleName)
-    : impl_(std::make_unique<Impl>(std::move(moduleName))) {}
+CodeGenerator::CodeGenerator(std::string moduleName, CodegenOptions options)
+    : impl_(std::make_unique<Impl>(std::move(moduleName), options)) {}
 
 CodeGenerator::~CodeGenerator() = default;
 
@@ -537,6 +543,12 @@ bool CodeGenerator::writeIR(const std::string& outputPath) const {
         return false;
     }
     return true;
+}
+
+bool CodeGenerator::writeObject(const std::string&) {
+    impl_->errorMessage =
+        "object emission requires an LLVM development package and the LLVM API backend";
+    return false;
 }
 
 void CodeGenerator::printIR() const { std::cout << impl_->moduleIR; }

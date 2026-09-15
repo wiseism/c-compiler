@@ -48,7 +48,7 @@ target_include_directories(lumenc PRIVATE
 if(LLVM_FOUND)
     target_include_directories(lumenc SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
     target_compile_definitions(lumenc PRIVATE ${LLVM_DEFINITIONS})
-    llvm_map_components_to_libnames(LLVM_LIBS core support)
+    llvm_map_components_to_libnames(LLVM_LIBS core support passes nativecodegen native)
     target_link_libraries(lumenc PRIVATE ${LLVM_LIBS})
 endif()
 
@@ -85,4 +85,20 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests
                 ${CMAKE_CURRENT_BINARY_DIR}/test-output
     )
+    if(LLVM_FOUND)
+        add_test(
+            NAME llvm_backend
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/llvm_backend.sh
+                    $<TARGET_FILE:lumenc> ${CLANG_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/program.lm
+                    ${CMAKE_CURRENT_BINARY_DIR}/llvm-backend-output
+        )
+    else()
+        add_test(
+            NAME fallback_backend_limits
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/fallback_backend.sh
+                    $<TARGET_FILE:lumenc> ${CMAKE_CURRENT_SOURCE_DIR}/tests/program.lm
+                    ${CMAKE_CURRENT_BINARY_DIR}/fallback-output
+        )
+    endif()
 endif()

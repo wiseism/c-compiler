@@ -17,13 +17,15 @@ extern std::unique_ptr<lumen::Program> parsedProgram;
 
 namespace {
 void usage(const char* argv0) {
-    std::cerr << "usage: " << argv0 << " <input.lm> [-o <output.ll>]\n";
+    std::cerr << "usage: " << argv0
+              << " [--emit-llvm | -c] [-O0|-O1|-O2|-O3] <input.lm> [-o output]\n";
 }
 } // namespace
 
 int main(int argc, char** argv) {
     std::string inputPath;
     std::string outputPath;
+    lumen::CodegenOptions codegenOptions;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -34,6 +36,19 @@ int main(int argc, char** argv) {
         if (arg == "--version") {
             std::cout << "lumenc 0.1.0\n";
             return 0;
+        }
+        if (arg == "--emit-llvm") {
+            codegenOptions.emitObject = false;
+            continue;
+        }
+        if (arg == "-c" || arg == "--emit-object") {
+            codegenOptions.emitObject = true;
+            continue;
+        }
+        if (arg.size() == 3 && arg[0] == '-' && arg[1] == 'O' &&
+            arg[2] >= '0' && arg[2] <= '3') {
+            codegenOptions.optimizationLevel = static_cast<unsigned>(arg[2] - '0');
+            continue;
         }
         if (arg == "-o") {
             if (++i == argc) {
@@ -86,13 +101,22 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    lumen::CodeGenerator generator(std::filesystem::path(inputPath).filename().string());
+    lumen::CodeGenerator generator(std::filesystem::path(inputPath).filename().string(),
+                                   codegenOptions);
     if (!generator.generate(semanticAnalyzer.typedProgram())) {
         std::cerr << "error: " << generator.error() << '\n';
         return 1;
     }
 
-    if (outputPath.empty()) {
+    if (codegenOptions.emitObject) {
+        if (outputPath.empty()) {
+            outputPath = std::filesystem::path(inputPath).filename().replace_extension(".o").string();
+        }
+        if (!generator.writeObject(outputPath)) {
+            std::cerr << "error: " << generator.error() << '\n';
+            return 1;
+        }
+    } else if (outputPath.empty()) {
         generator.printIR();
     } else if (!generator.writeIR(outputPath)) {
         std::cerr << "error: " << generator.error() << '\n';
