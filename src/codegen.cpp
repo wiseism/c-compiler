@@ -203,11 +203,18 @@ struct CodeGenerator::Impl {
         llvm::ModuleAnalysisManager moduleAnalyses;
         llvm::PassInstrumentationCallbacks instrumentation;
         if (!options.passSnapshotDirectory.empty()) {
+#if LLVM_VERSION_MAJOR >= 12
             instrumentation.registerAfterPassCallback(
                 [this](llvm::StringRef passName, llvm::Any,
                        const llvm::PreservedAnalyses&) {
                     if (errorMessage.empty()) writeSnapshot(passName.str());
                 });
+#else
+            instrumentation.registerAfterPassCallback(
+                [this](llvm::StringRef passName, llvm::Any) {
+                    if (errorMessage.empty()) writeSnapshot(passName.str());
+                });
+#endif
         }
 #if LLVM_VERSION_MAJOR >= 16
         llvm::PassBuilder passBuilder(targetMachine.get(), llvm::PipelineTuningOptions(),
