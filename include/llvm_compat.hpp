@@ -2,12 +2,25 @@
 
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/PassInstrumentation.h>
+#include <llvm/IR/Module.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CodeGen.h>
+#if __has_include(<llvm/TargetParser/Triple.h>)
+#include <llvm/TargetParser/Triple.h>
+#else
+#include <llvm/ADT/Triple.h>
+#endif
+#if __has_include(<llvm/MC/TargetRegistry.h>)
+#include <llvm/MC/TargetRegistry.h>
+#else
+#include <llvm/Support/TargetRegistry.h>
+#endif
 #include <llvm/Target/TargetMachine.h>
 
 #include <functional>
 #include <optional>
+#include <string>
+#include <utility>
 
 #if LLVM_VERSION_MAJOR < 8
 #error "Lumen C requires LLVM 8 or newer"
@@ -44,6 +57,27 @@ inline llvm::PassBuilder makePassBuilder(
                              instrumentation);
 #else
     return llvm::PassBuilder(target, llvm::None, instrumentation);
+#endif
+}
+
+inline llvm::TargetMachine* createTargetMachine(const llvm::Target& target,
+                                                const std::string& triple,
+                                                const llvm::TargetOptions& options) {
+#if LLVM_VERSION_MAJOR >= 21
+    return target.createTargetMachine(llvm::Triple(triple), "generic", "", options,
+                                      std::nullopt);
+#elif LLVM_VERSION_MAJOR >= 16
+    return target.createTargetMachine(triple, "generic", "", options, std::nullopt);
+#else
+    return target.createTargetMachine(triple, "generic", "", options, llvm::None);
+#endif
+}
+
+inline void setTargetTriple(llvm::Module& module, const std::string& triple) {
+#if LLVM_VERSION_MAJOR >= 21
+    module.setTargetTriple(llvm::Triple(triple));
+#else
+    module.setTargetTriple(triple);
 #endif
 }
 

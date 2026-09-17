@@ -212,18 +212,13 @@ struct CodeGenerator::Impl {
             return false;
         }
         llvm::TargetOptions targetOptions;
-#if LLVM_VERSION_MAJOR >= 16
-        targetMachine.reset(target->createTargetMachine(
-            triple, "generic", "", targetOptions, std::nullopt));
-#else
-        targetMachine.reset(target->createTargetMachine(
-            triple, "generic", "", targetOptions, llvm::None));
-#endif
+        targetMachine.reset(llvm_compat::createTargetMachine(
+            *target, triple, targetOptions));
         if (!targetMachine) {
             errorMessage = "failed to create target machine for '" + triple + "'";
             return false;
         }
-        module.setTargetTriple(triple);
+        llvm_compat::setTargetTriple(module, triple);
         module.setDataLayout(targetMachine->createDataLayout());
         return true;
     }
