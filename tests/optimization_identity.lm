@@ -1,0 +1,7 @@
+int simplify(int value) {
+    return (value + 0) * 1;
+}
+
+int main(void) {
+    return simplify(42);
+}

@@ -64,6 +64,9 @@ clang fibonacci.o -o fibonacci
 LLVM debug metadata，并让对象文件携带 DWARF。PassBuilder、对象文件和调试信息输出
 需要 LLVM 开发包；文本 IR fallback 会给出明确诊断。
 
+启用优化时，编译器会先运行自定义代数恒等式 pass，消除 `x + 0`、`x - 0` 和
+`x * 1`，再进入 LLVM 的标准优化 pipeline。
+
 定位优化回归时可保存初始、每个实际改变 IR 的 pass 以及最终快照：
 
 ```bash

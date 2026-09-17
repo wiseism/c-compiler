@@ -134,6 +134,14 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/program.lm
                     ${CMAKE_CURRENT_BINARY_DIR}/llvm-backend-output
         )
+        add_test(
+            NAME algebraic_identity_pass
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/optimization_pass.sh
+                    $<TARGET_FILE:lumenc> ${CLANG_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/optimization_identity.lm
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/optimization_guard.lm
+                    ${CMAKE_CURRENT_BINARY_DIR}/optimization-pass-output
+        )
     else()
         add_test(
             NAME fallback_backend_limits

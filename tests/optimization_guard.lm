@@ -1,0 +1,7 @@
+int preserve(int value) {
+    return (value + 1) * 2;
+}
+
+int main(void) {
+    return preserve(20) + 0;
+}

@@ -12,6 +12,7 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/LegacyPassManager.h>
@@ -54,6 +55,35 @@
 #include <vector>
 
 namespace lumen {
+
+class AlgebraicIdentityPass : public llvm::PassInfoMixin<AlgebraicIdentityPass> {
+public:
+    llvm::PreservedAnalyses run(llvm::Function& function,
+                                llvm::FunctionAnalysisManager&) {
+        std::vector<llvm::Instruction*> dead;
+        for (llvm::BasicBlock& block : function) {
+            for (llvm::Instruction& instruction : block) {
+                auto* binary = llvm::dyn_cast<llvm::BinaryOperator>(&instruction);
+                if (!binary) continue;
+                auto* right = llvm::dyn_cast<llvm::ConstantInt>(binary->getOperand(1));
+                if (!right) continue;
+                llvm::Value* replacement = nullptr;
+                if ((binary->getOpcode() == llvm::Instruction::Add ||
+                     binary->getOpcode() == llvm::Instruction::Sub) && right->isZero()) {
+                    replacement = binary->getOperand(0);
+                } else if (binary->getOpcode() == llvm::Instruction::Mul && right->isOne()) {
+                    replacement = binary->getOperand(0);
+                }
+                if (!replacement) continue;
+                binary->replaceAllUsesWith(replacement);
+                dead.push_back(binary);
+            }
+        }
+        for (llvm::Instruction* instruction : dead) instruction->eraseFromParent();
+        return dead.empty() ? llvm::PreservedAnalyses::all()
+                            : llvm::PreservedAnalyses::none();
+    }
+};
 
 struct CodeGenerator::Impl {
     Impl(std::string moduleName, CodegenOptions requestedOptions)
@@ -235,6 +265,13 @@ struct CodeGenerator::Impl {
         passBuilder.registerLoopAnalyses(loopAnalyses);
         passBuilder.crossRegisterProxies(loopAnalyses, functionAnalyses,
                                          cgsccAnalyses, moduleAnalyses);
+        llvm::FunctionPassManager identityPasses;
+        identityPasses.addPass(AlgebraicIdentityPass());
+        llvm::ModulePassManager identityModulePasses;
+        identityModulePasses.addPass(
+            llvm::createModuleToFunctionPassAdaptor(std::move(identityPasses)));
+        identityModulePasses.run(module, moduleAnalyses);
+        if (!writeSnapshot("algebraic-identity", true)) return false;
 #if LLVM_VERSION_MAJOR >= 12
         llvm::OptimizationLevel level = llvm::OptimizationLevel::O1;
         if (options.optimizationLevel == 2) level = llvm::OptimizationLevel::O2;
