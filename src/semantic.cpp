@@ -126,6 +126,8 @@ struct SemanticAnalyzer::Impl {
         TypePtr result;
         if (dynamic_cast<NumberExpr*>(&expr)) {
             result = Type::int32();
+        } else if (dynamic_cast<StringExpr*>(&expr)) {
+            result = Type::pointerTo(Type::char8());
         } else if (dynamic_cast<NullExpr*>(&expr)) {
             result = Type::nullPointer();
         } else if (auto* variable = dynamic_cast<VariableExpr*>(&expr)) {

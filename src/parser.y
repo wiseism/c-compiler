@@ -48,10 +48,10 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
     lumen::TypePtr* type;
 }
 
-%token INT VOID EXTERN IF ELSE WHILE BREAK RETURN NULLPTR
+%token INT CHAR VOID EXTERN IF ELSE WHILE BREAK RETURN NULLPTR
 %token EQ NE LE GE AND OR INVALID
 %token <number> NUMBER
-%token <text> IDENTIFIER
+%token <text> IDENTIFIER STRING_LITERAL
 
 %type <expr> expression assignment logical_or logical_and bitwise_xor equality relational additive multiplicative unary postfix primary
 %type <exprs> argument_list argument_list_opt
@@ -170,6 +170,7 @@ type_specifier
 
 base_type
     : INT  { $$ = new lumen::TypePtr(lumen::Type::int32()); }
+    | CHAR { $$ = new lumen::TypePtr(lumen::Type::char8()); }
     | VOID { $$ = new lumen::TypePtr(lumen::Type::voidType()); }
     ;
 
@@ -361,6 +362,10 @@ postfix
 
 primary
     : NUMBER { $$ = new lumen::NumberExpr($1, @1.first_line, @1.first_column); }
+    | STRING_LITERAL {
+          $$ = new lumen::StringExpr(std::move(*$1), @1.first_line, @1.first_column);
+          delete $1;
+      }
     | NULLPTR { $$ = new lumen::NullExpr(@1.first_line, @1.first_column); }
     | IDENTIFIER {
           $$ = new lumen::VariableExpr(std::move(*$1), @1.first_line, @1.first_column);

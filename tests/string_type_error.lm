@@ -1,0 +1,4 @@
+int main(void) {
+    int value = "not an integer";
+    return value;
+}

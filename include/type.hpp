@@ -9,6 +9,7 @@ namespace lumen {
 
 enum class TypeKind {
     Int32,
+    Char8,
     Void,
     Pointer,
     Array,
@@ -21,6 +22,11 @@ public:
 
     static Ptr int32() {
         static const Ptr instance(new Type(TypeKind::Int32));
+        return instance;
+    }
+
+    static Ptr char8() {
+        static const Ptr instance(new Type(TypeKind::Char8));
         return instance;
     }
 
@@ -56,6 +62,8 @@ public:
         switch (kind_) {
         case TypeKind::Int32:
             return "int";
+        case TypeKind::Char8:
+            return "char";
         case TypeKind::Void:
             return "void";
         case TypeKind::Pointer:

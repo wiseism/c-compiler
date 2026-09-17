@@ -4,7 +4,28 @@
 #include "parser.hpp"
 
 #include <cstdlib>
+#include <cstddef>
 #include <string>
+
+static std::string decodeString(const char* text, std::size_t length) {
+    std::string result;
+    for (std::size_t i = 1; i + 1 < length; ++i) {
+        if (text[i] != '\\') {
+            result.push_back(text[i]);
+            continue;
+        }
+        ++i;
+        switch (text[i]) {
+        case 'n': result.push_back('\n'); break;
+        case 'r': result.push_back('\r'); break;
+        case 't': result.push_back('\t'); break;
+        case '0': result.push_back('\0'); break;
+        case '\\': result.push_back('\\'); break;
+        case '"': result.push_back('"'); break;
+        }
+    }
+    return result;
+}
 
 #ifdef _WIN32
 #define YY_NO_UNISTD_H
@@ -37,6 +58,7 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 <COMMENT><<EOF>>          return INVALID;
 
 "int"                     return INT;
+"char"                    return CHAR;
 "void"                    return VOID;
 "null"                    return NULLPTR;
 "extern"                  return EXTERN;
@@ -56,6 +78,11 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 {DIGIT}+                  {
                               yylval.number = std::strtoll(yytext, nullptr, 10);
                               return NUMBER;
+                          }
+\"([^\"\\\n]|\\[\"\\nrt0])*\" {
+                              yylval.text = new std::string(
+                                  decodeString(yytext, static_cast<std::size_t>(yyleng)));
+                              return STRING_LITERAL;
                           }
 {IDENT}                    {
                               yylval.text = new std::string(yytext);

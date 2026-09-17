@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -25,9 +26,11 @@ struct CodeGenerator::Impl {
 
     std::ostringstream body;
     std::ostringstream allocas;
+    std::ostringstream stringConstants;
     int nextTemporary = 0;
     int nextSlot = 0;
     int nextLabel = 0;
+    int nextString = 0;
     std::string currentLabel;
     bool terminated = false;
     bool usesTrap = false;
@@ -37,6 +40,8 @@ struct CodeGenerator::Impl {
         switch (type->kind()) {
         case TypeKind::Int32:
             return "i32";
+        case TypeKind::Char8:
+            return "i8";
         case TypeKind::Void:
             return "void";
         case TypeKind::Pointer:
@@ -204,6 +209,20 @@ struct CodeGenerator::Impl {
         if (const auto* number = dynamic_cast<const NumberExpr*>(&expr)) {
             const std::uint32_t bits = static_cast<std::uint32_t>(number->value);
             return std::to_string(static_cast<std::int32_t>(bits));
+        }
+        if (const auto* string = dynamic_cast<const StringExpr*>(&expr)) {
+            const std::string name = "@.str." + std::to_string(nextString++);
+            const std::size_t length = string->value.size() + 1;
+            stringConstants << name << " = private unnamed_addr constant [" << length
+                            << " x i8] c\"";
+            for (unsigned char byte : string->value) {
+                stringConstants << '\\' << std::uppercase << std::hex << std::setw(2)
+                                << std::setfill('0') << static_cast<unsigned>(byte)
+                                << std::dec;
+            }
+            stringConstants << "\\00\"\n";
+            return "getelementptr inbounds ([" + std::to_string(length) + " x i8], [" +
+                   std::to_string(length) + " x i8]* " + name + ", i32 0, i32 0)";
         }
         if (dynamic_cast<const NullExpr*>(&expr)) {
             if (!isPointerType(expr.inferredType)) {
@@ -489,6 +508,9 @@ struct CodeGenerator::Impl {
         storage.clear();
         loopExitLabels.clear();
         usesTrap = false;
+        nextString = 0;
+        stringConstants.str({});
+        stringConstants.clear();
 
         std::ostringstream declarations;
         for (const TypedFunction& function : program.functions) {
@@ -537,7 +559,9 @@ struct CodeGenerator::Impl {
         std::ostringstream module;
         module << "; ModuleID = '" << moduleName << "'\n";
         if (usesTrap) module << "declare void @llvm.trap()\n\n";
-        module << declarations.str() << globalDefinitions.str() << definitions.str();
+        module << declarations.str() << globalDefinitions.str() << stringConstants.str();
+        if (!stringConstants.str().empty()) module << '\n';
+        module << definitions.str();
         moduleIR = module.str();
         return true;
     }

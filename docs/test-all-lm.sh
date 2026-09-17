@@ -21,7 +21,7 @@ is_expected_failure() {
     case "$1" in
         bitwise_xor_type_error|break_outside_loop|constant_bounds_error|duplicate_parameter|missing_return|multiple_semantic_errors|\
         multiple_syntax_errors|nonconstant_global|pointer_type_error|semantic_error|\
-        syntax_error|void_value_error|wrong_arity|fuzz-corpus/recovery) return 0 ;;
+        string_type_error|syntax_error|void_value_error|wrong_arity|fuzz-corpus/recovery) return 0 ;;
         *) return 1 ;;
     esac
 }

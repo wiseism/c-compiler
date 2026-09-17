@@ -1,0 +1,6 @@
+extern int puts(char* text);
+
+int main(void) {
+    puts("Hello, Lumen!");
+    return 42;
+}

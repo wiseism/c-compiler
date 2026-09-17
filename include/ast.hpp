@@ -29,6 +29,12 @@ struct NumberExpr final : Expr {
     std::int64_t value;
 };
 
+struct StringExpr final : Expr {
+    StringExpr(std::string stringValue, int sourceLine, int sourceColumn = 1)
+        : Expr(sourceLine, sourceColumn), value(std::move(stringValue)) {}
+    std::string value;
+};
+
 struct NullExpr final : Expr {
     explicit NullExpr(int sourceLine, int sourceColumn = 1)
         : Expr(sourceLine, sourceColumn) {}

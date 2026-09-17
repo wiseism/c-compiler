@@ -30,7 +30,8 @@ struct ConstantFolder::Impl {
     }
 
     void foldExpr(std::unique_ptr<Expr>& expr) {
-        if (!expr || number(expr.get()) || dynamic_cast<NullExpr*>(expr.get()) ||
+        if (!expr || number(expr.get()) || dynamic_cast<StringExpr*>(expr.get()) ||
+            dynamic_cast<NullExpr*>(expr.get()) ||
             dynamic_cast<VariableExpr*>(expr.get())) return;
 
         if (auto* assign = dynamic_cast<AssignExpr*>(expr.get())) {

@@ -131,6 +131,9 @@ struct CodeGenerator::Impl {
         if (type->kind() == TypeKind::Int32) {
             return debugBuilder->createBasicType("int", 32, llvm::dwarf::DW_ATE_signed);
         }
+        if (type->kind() == TypeKind::Char8) {
+            return debugBuilder->createBasicType("char", 8, llvm::dwarf::DW_ATE_signed_char);
+        }
         if (type->kind() == TypeKind::Pointer) {
             return debugBuilder->createPointerType(debugType(type->elementType()), 64);
         }
@@ -252,6 +255,8 @@ struct CodeGenerator::Impl {
         switch (type->kind()) {
         case TypeKind::Int32:
             return intType();
+        case TypeKind::Char8:
+            return llvm::Type::getInt8Ty(context);
         case TypeKind::Void:
             return llvm::Type::getVoidTy(context);
         case TypeKind::Pointer:
@@ -435,6 +440,9 @@ struct CodeGenerator::Impl {
         setDebugLocation(expr.line, expr.column);
         if (const auto* number = dynamic_cast<const NumberExpr*>(&expr)) {
             return llvm::ConstantInt::get(intType(), static_cast<std::uint64_t>(number->value), true);
+        }
+        if (const auto* string = dynamic_cast<const StringExpr*>(&expr)) {
+            return builder.CreateGlobalStringPtr(string->value, "str");
         }
         if (dynamic_cast<const NullExpr*>(&expr)) {
             auto* type = llvm::dyn_cast_or_null<llvm::PointerType>(llvmType(expr.inferredType));

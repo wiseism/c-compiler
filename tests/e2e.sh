@@ -69,6 +69,25 @@ if ! grep -q "'break' is only valid inside a loop" \
     exit 1
 fi
 
+"$compiler" "$fixtures/string_puts.lm" -o "$output_dir/string_puts.ll" || exit 1
+"$clang" "$output_dir/string_puts.ll" -o "$output_dir/string_puts" || exit 1
+string_output=$("$output_dir/string_puts")
+string_status=$?
+if [[ $string_status -ne 42 || "$string_output" != "Hello, Lumen!" ]]; then
+    echo "string/puts test failed: status=$string_status output=$string_output" >&2
+    exit 1
+fi
+if "$compiler" "$fixtures/string_type_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/string_type_error.txt"; then
+    echo "string-to-int initialization unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "cannot initialize 'value' of type 'int' with 'char\*'" \
+    "$output_dir/string_type_error.txt"; then
+    echo "string type diagnostic was not specific" >&2
+    exit 1
+fi
+
 if "$compiler" "$fixtures/semantic_error.lm" -o "$output_dir/bad.ll" \
     2>"$output_dir/semantic_error.txt"; then
     echo "semantic error input unexpectedly compiled" >&2
