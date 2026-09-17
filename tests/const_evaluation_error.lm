@@ -1,0 +1,4 @@
+int main(void) {
+    const int invalid = 1 / 0;
+    return invalid;
+}

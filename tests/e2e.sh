@@ -115,6 +115,16 @@ if ! grep -q "initializer for const variable 'answer' is not a constant expressi
     echo "const initializer diagnostic was not specific" >&2
     exit 1
 fi
+if "$compiler" "$fixtures/const_evaluation_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/const_evaluation_error.txt"; then
+    echo "unevaluable const initializer unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "initializer for const variable 'invalid' cannot be evaluated at compile time" \
+    "$output_dir/const_evaluation_error.txt"; then
+    echo "const evaluation diagnostic was not specific" >&2
+    exit 1
+fi
 
 if "$compiler" "$fixtures/semantic_error.lm" -o "$output_dir/bad.ll" \
     2>"$output_dir/semantic_error.txt"; then

@@ -132,6 +132,14 @@ struct ConstantFolder::Impl {
             foldExpr(expression->expr);
         } else if (auto* declaration = dynamic_cast<VarDeclStmt*>(&stmt)) {
             foldExpr(declaration->init);
+            if (declaration->isConst && declaration->init &&
+                !number(declaration->init.get()) &&
+                !dynamic_cast<StringExpr*>(declaration->init.get()) &&
+                !dynamic_cast<NullExpr*>(declaration->init.get())) {
+                fail(declaration->init->line, "initializer for const variable '" +
+                                                  declaration->name +
+                                                  "' cannot be evaluated at compile time");
+            }
         } else if (auto* returnStmt = dynamic_cast<ReturnStmt*>(&stmt)) {
             foldExpr(returnStmt->value);
         } else if (auto* ifStmt = dynamic_cast<IfStmt*>(&stmt)) {
