@@ -446,6 +446,10 @@ CTest 通过 `$<TARGET_FILE:lumenc>` 传入实际构建产物，避免依赖 PAT
 `llvm-api` job 还构建文本 reference compiler 并运行行为差分。所有 job 都从干净环境
 生成 Flex/Bison 代码，普通后端 job 执行完整 CTest。
 
+`include/llvm_compat.hpp` 隔离 LLVM 8–21 的 API 差异，包括 pass instrumentation
+回调、PassBuilder 构造、优化等级和对象文件枚举。macOS matrix 对 LLVM 15、18、20、
+21 分别执行完整构建和测试，其中 LLVM 21 是最新兼容性门禁。
+
 ## 13. 调试手册
 
 ### 13.1 前端崩溃

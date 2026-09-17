@@ -1,4 +1,5 @@
 #include "codegen.hpp"
+#include "llvm_compat.hpp"
 
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
@@ -237,28 +238,13 @@ struct CodeGenerator::Impl {
         llvm::ModuleAnalysisManager moduleAnalyses;
         llvm::PassInstrumentationCallbacks instrumentation;
         if (!options.passSnapshotDirectory.empty()) {
-#if LLVM_VERSION_MAJOR >= 12
-            instrumentation.registerAfterPassCallback(
-                [this](llvm::StringRef passName, llvm::Any,
-                       const llvm::PreservedAnalyses&) {
+            llvm_compat::registerAfterPassCallback(
+                instrumentation, [this](llvm::StringRef passName) {
                     if (errorMessage.empty()) writeSnapshot(passName.str());
                 });
-#else
-            instrumentation.registerAfterPassCallback(
-                [this](llvm::StringRef passName, llvm::Any) {
-                    if (errorMessage.empty()) writeSnapshot(passName.str());
-                });
-#endif
         }
-#if LLVM_VERSION_MAJOR >= 16
-        llvm::PassBuilder passBuilder(targetMachine.get(), llvm::PipelineTuningOptions(),
-                                      std::nullopt, &instrumentation);
-#elif LLVM_VERSION_MAJOR >= 11
-        llvm::PassBuilder passBuilder(targetMachine.get(), llvm::PipelineTuningOptions(),
-                                      llvm::None, &instrumentation);
-#else
-        llvm::PassBuilder passBuilder(targetMachine.get(), llvm::None, &instrumentation);
-#endif
+        llvm::PassBuilder passBuilder = llvm_compat::makePassBuilder(
+            targetMachine.get(), &instrumentation);
         passBuilder.registerModuleAnalyses(moduleAnalyses);
         passBuilder.registerCGSCCAnalyses(cgsccAnalyses);
         passBuilder.registerFunctionAnalyses(functionAnalyses);
@@ -272,15 +258,8 @@ struct CodeGenerator::Impl {
             llvm::createModuleToFunctionPassAdaptor(std::move(identityPasses)));
         identityModulePasses.run(module, moduleAnalyses);
         if (!writeSnapshot("algebraic-identity", true)) return false;
-#if LLVM_VERSION_MAJOR >= 12
-        llvm::OptimizationLevel level = llvm::OptimizationLevel::O1;
-        if (options.optimizationLevel == 2) level = llvm::OptimizationLevel::O2;
-        if (options.optimizationLevel >= 3) level = llvm::OptimizationLevel::O3;
-#else
-        llvm::PassBuilder::OptimizationLevel level = llvm::PassBuilder::O1;
-        if (options.optimizationLevel == 2) level = llvm::PassBuilder::O2;
-        if (options.optimizationLevel >= 3) level = llvm::PassBuilder::O3;
-#endif
+        const llvm_compat::OptimizationLevel level =
+            llvm_compat::optimizationLevel(options.optimizationLevel);
         llvm::ModulePassManager passes = passBuilder.buildPerModuleDefaultPipeline(level);
         passes.run(module, moduleAnalyses);
         return errorMessage.empty();
@@ -794,13 +773,7 @@ bool CodeGenerator::writeObject(const std::string& outputPath) {
         return false;
     }
     llvm::legacy::PassManager passes;
-#if LLVM_VERSION_MAJOR >= 18
-    const auto fileType = llvm::CodeGenFileType::ObjectFile;
-#elif LLVM_VERSION_MAJOR >= 10
-    const auto fileType = llvm::CGFT_ObjectFile;
-#else
-    const auto fileType = llvm::TargetMachine::CGFT_ObjectFile;
-#endif
+    const auto fileType = llvm_compat::objectFileType();
     if (impl_->targetMachine->addPassesToEmitFile(passes, output, nullptr, fileType)) {
         impl_->errorMessage = "target machine cannot emit an object file";
         return false;

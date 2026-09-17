@@ -43,6 +43,9 @@ ctest --test-dir build --output-on-failure
 `-DLLVM_DIR=/path/to/lib/cmake/llvm` 指定。也可以用
 `-DCMAKE_DISABLE_FIND_PACKAGE_LLVM=TRUE` 显式测试文本 IR 后端。
 
+LLVM API 后端支持 LLVM 8–21；版本差异集中在 `include/llvm_compat.hpp`。CI 使用
+LLVM 15、18、20 和 21 构建并运行完整测试。
+
 ## 使用
 
 ```bash
