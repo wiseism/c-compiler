@@ -283,6 +283,7 @@ struct CodeGenerator::Impl {
             else if (binary->op == "*") opcode = "mul";
             else if (binary->op == "/") opcode = "sdiv";
             else if (binary->op == "%") opcode = "srem";
+            else if (binary->op == "^") opcode = "xor";
             else if (binary->op == "==") { opcode = "icmp eq"; comparison = true; }
             else if (binary->op == "!=") { opcode = "icmp ne"; comparison = true; }
             else if (binary->op == "<") { opcode = "icmp slt"; comparison = true; }

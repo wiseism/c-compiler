@@ -1,0 +1,4 @@
+int main(void) {
+    int mask = 40;
+    return mask ^ 2;
+}

@@ -31,6 +31,25 @@ if [[ $forward_status -ne 42 ]]; then
     exit 1
 fi
 
+"$compiler" "$fixtures/bitwise_xor.lm" -o "$output_dir/bitwise_xor.ll" || exit 1
+"$clang" "$output_dir/bitwise_xor.ll" -o "$output_dir/bitwise_xor" || exit 1
+"$output_dir/bitwise_xor"
+xor_status=$?
+if [[ $xor_status -ne 42 ]]; then
+    echo "expected bitwise-xor program exit status 42, got $xor_status" >&2
+    exit 1
+fi
+if "$compiler" "$fixtures/bitwise_xor_type_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/bitwise_xor_type_error.txt"; then
+    echo "pointer xor unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "left operand of '\^' requires 'int', got 'int\*'" \
+    "$output_dir/bitwise_xor_type_error.txt"; then
+    echo "bitwise-xor type diagnostic was not specific" >&2
+    exit 1
+fi
+
 if "$compiler" "$fixtures/semantic_error.lm" -o "$output_dir/bad.ll" \
     2>"$output_dir/semantic_error.txt"; then
     echo "semantic error input unexpectedly compiled" >&2

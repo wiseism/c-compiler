@@ -53,7 +53,7 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
 %token <number> NUMBER
 %token <text> IDENTIFIER
 
-%type <expr> expression assignment logical_or logical_and equality relational additive multiplicative unary postfix primary
+%type <expr> expression assignment logical_or logical_and bitwise_xor equality relational additive multiplicative unary postfix primary
 %type <exprs> argument_list argument_list_opt
 %type <stmt> statement variable_decl return_stmt if_stmt while_stmt expression_stmt
 %type <block> block
@@ -299,8 +299,13 @@ logical_or
     ;
 
 logical_and
+    : bitwise_xor { $$ = $1; }
+    | logical_and AND bitwise_xor { $$ = new lumen::BinaryExpr("&&", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    ;
+
+bitwise_xor
     : equality { $$ = $1; }
-    | logical_and AND equality { $$ = new lumen::BinaryExpr("&&", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
+    | bitwise_xor '^' equality { $$ = new lumen::BinaryExpr("^", std::unique_ptr<lumen::Expr>($1), std::unique_ptr<lumen::Expr>($3), @2.first_line, @2.first_column); }
     ;
 
 equality

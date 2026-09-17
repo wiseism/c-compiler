@@ -489,6 +489,7 @@ struct CodeGenerator::Impl {
             else if (binary->op == "*") result = builder.CreateMul(left, right, "mul");
             else if (binary->op == "/") result = builder.CreateSDiv(left, right, "div");
             else if (binary->op == "%") result = builder.CreateSRem(left, right, "rem");
+            else if (binary->op == "^") result = builder.CreateXor(left, right, "xor");
             else if (binary->op == "==") result = builder.CreateICmpEQ(left, right, "eq");
             else if (binary->op == "!=") result = builder.CreateICmpNE(left, right, "ne");
             else if (binary->op == "<") result = builder.CreateICmpSLT(left, right, "lt");

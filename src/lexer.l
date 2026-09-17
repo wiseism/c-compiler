@@ -60,6 +60,6 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
                               yylval.text = new std::string(yytext);
                               return IDENTIFIER;
                           }
-[(){}\[\];,=+\-*/%!<>&]  return yytext[0];
+[(){}\[\];,=+\-*/%!<>&^] return yytext[0];
 .                         return INVALID;
 %%

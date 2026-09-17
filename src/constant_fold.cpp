@@ -108,6 +108,9 @@ struct ConstantFolder::Impl {
         } else if (binary->op == "%") {
             if (right == 0 || (left == INT32_MIN && right == -1)) return;
             result = left % right;
+        } else if (binary->op == "^") {
+            result = static_cast<std::int32_t>(static_cast<std::uint32_t>(left) ^
+                                               static_cast<std::uint32_t>(right));
         } else if (binary->op == "==") result = left == right;
         else if (binary->op == "!=") result = left != right;
         else if (binary->op == "<") result = left < right;
