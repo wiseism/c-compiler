@@ -1,0 +1,1 @@
+error: line 6:5: return requires 'int', got 'void'

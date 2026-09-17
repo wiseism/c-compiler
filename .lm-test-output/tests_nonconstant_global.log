@@ -1,0 +1,1 @@
+error: line 5: initializer for global 'global' is not a constant expression
