@@ -48,14 +48,14 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
     lumen::TypePtr* type;
 }
 
-%token INT VOID EXTERN IF ELSE WHILE RETURN NULLPTR
+%token INT VOID EXTERN IF ELSE WHILE BREAK RETURN NULLPTR
 %token EQ NE LE GE AND OR INVALID
 %token <number> NUMBER
 %token <text> IDENTIFIER
 
 %type <expr> expression assignment logical_or logical_and bitwise_xor equality relational additive multiplicative unary postfix primary
 %type <exprs> argument_list argument_list_opt
-%type <stmt> statement variable_decl return_stmt if_stmt while_stmt expression_stmt
+%type <stmt> statement variable_decl return_stmt if_stmt while_stmt break_stmt expression_stmt
 %type <block> block
 %type <stmts> statement_list
 %type <top> external_declaration function_definition extern_declaration
@@ -211,6 +211,7 @@ statement
     | return_stmt     { $$ = $1; }
     | if_stmt         { $$ = $1; }
     | while_stmt      { $$ = $1; }
+    | break_stmt      { $$ = $1; }
     | expression_stmt { $$ = $1; }
     | error ';' {
           yyerrok;
@@ -270,6 +271,12 @@ while_stmt
           $$ = new lumen::WhileStmt(std::unique_ptr<lumen::Expr>($3),
                                     std::unique_ptr<lumen::Stmt>($5), @1.first_line,
                                     @1.first_column);
+      }
+    ;
+
+break_stmt
+    : BREAK ';' {
+          $$ = new lumen::BreakStmt(@1.first_line, @1.first_column);
       }
     ;
 

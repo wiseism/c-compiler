@@ -73,6 +73,7 @@ struct CodeGenerator::Impl {
     std::string errorMessage;
     std::size_t snapshotIndex = 0;
     std::string lastSnapshotIR;
+    std::vector<llvm::BasicBlock*> loopExitBlocks;
 
     bool writeSnapshot(const std::string& label, bool force = false) {
         if (options.passSnapshotDirectory.empty()) return true;
@@ -567,6 +568,11 @@ struct CodeGenerator::Impl {
             builder.CreateRet(value);
             return true;
         }
+        if (dynamic_cast<const BreakStmt*>(&stmt)) {
+            if (loopExitBlocks.empty()) return fail(stmt.line, "break outside loop");
+            builder.CreateBr(loopExitBlocks.back());
+            return true;
+        }
         if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&stmt)) {
             llvm::Value* condition = emitExpr(*ifStmt->cond);
             if (!condition) return false;
@@ -607,7 +613,10 @@ struct CodeGenerator::Impl {
             builder.CreateCondBr(asBool(condition), bodyBlock, endBlock);
 
             builder.SetInsertPoint(bodyBlock);
-            if (!emitScoped(*whileStmt->body)) return false;
+            loopExitBlocks.push_back(endBlock);
+            const bool bodyOk = emitScoped(*whileStmt->body);
+            loopExitBlocks.pop_back();
+            if (!bodyOk) return false;
             if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(conditionBlock);
             builder.SetInsertPoint(endBlock);
             return true;
@@ -675,6 +684,7 @@ struct CodeGenerator::Impl {
     bool generate(const TypedProgram& program) {
         typedProgram = &program;
         storage.clear();
+        loopExitBlocks.clear();
         snapshotIndex = 0;
         lastSnapshotIR.clear();
         initializeDebugInfo();

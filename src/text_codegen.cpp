@@ -31,6 +31,7 @@ struct CodeGenerator::Impl {
     std::string currentLabel;
     bool terminated = false;
     bool usesTrap = false;
+    std::vector<std::string> loopExitLabels;
 
     static std::string irType(const TypePtr& type) {
         switch (type->kind()) {
@@ -370,6 +371,11 @@ struct CodeGenerator::Impl {
             terminated = true;
             return true;
         }
+        if (dynamic_cast<const BreakStmt*>(&stmt)) {
+            if (loopExitLabels.empty()) return fail(stmt.line, "break outside loop");
+            branch(loopExitLabels.back());
+            return true;
+        }
         if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&stmt)) {
             const std::string condition = emitExpr(*ifStmt->cond);
             if (condition.empty()) return false;
@@ -416,7 +422,10 @@ struct CodeGenerator::Impl {
             terminated = true;
 
             emitLabel(bodyLabel);
-            if (!emitScoped(*whileStmt->body)) return false;
+            loopExitLabels.push_back(endLabel);
+            const bool bodyOk = emitScoped(*whileStmt->body);
+            loopExitLabels.pop_back();
+            if (!bodyOk) return false;
             if (!terminated) branch(conditionLabel);
             emitLabel(endLabel);
             return true;
@@ -478,6 +487,7 @@ struct CodeGenerator::Impl {
         }
         typedProgram = &program;
         storage.clear();
+        loopExitLabels.clear();
         usesTrap = false;
 
         std::ostringstream declarations;

@@ -118,6 +118,11 @@ struct ReturnStmt final : Stmt {
     std::unique_ptr<Expr> value;
 };
 
+struct BreakStmt final : Stmt {
+    explicit BreakStmt(int sourceLine, int sourceColumn = 1)
+        : Stmt(sourceLine, sourceColumn) {}
+};
+
 struct IfStmt final : Stmt {
     IfStmt(std::unique_ptr<Expr> condition, std::unique_ptr<Stmt> thenStatement,
            std::unique_ptr<Stmt> elseStatement, int sourceLine, int sourceColumn = 1)

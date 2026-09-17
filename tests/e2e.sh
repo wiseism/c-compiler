@@ -50,6 +50,25 @@ if ! grep -q "left operand of '\^' requires 'int', got 'int\*'" \
     exit 1
 fi
 
+"$compiler" "$fixtures/break_loop.lm" -o "$output_dir/break_loop.ll" || exit 1
+"$clang" "$output_dir/break_loop.ll" -o "$output_dir/break_loop" || exit 1
+"$output_dir/break_loop"
+break_status=$?
+if [[ $break_status -ne 42 ]]; then
+    echo "expected break-loop program exit status 42, got $break_status" >&2
+    exit 1
+fi
+if "$compiler" "$fixtures/break_outside_loop.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/break_outside_loop.txt"; then
+    echo "break outside loop unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "'break' is only valid inside a loop" \
+    "$output_dir/break_outside_loop.txt"; then
+    echo "break placement diagnostic was not specific" >&2
+    exit 1
+fi
+
 if "$compiler" "$fixtures/semantic_error.lm" -o "$output_dir/bad.ll" \
     2>"$output_dir/semantic_error.txt"; then
     echo "semantic error input unexpectedly compiled" >&2

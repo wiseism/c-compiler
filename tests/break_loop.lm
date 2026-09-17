@@ -1,0 +1,10 @@
+int main(void) {
+    int value = 0;
+    while (1) {
+        value = value + 1;
+        if (value == 42) {
+            break;
+        }
+    }
+    return value;
+}

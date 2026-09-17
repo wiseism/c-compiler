@@ -43,6 +43,7 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 "if"                      return IF;
 "else"                    return ELSE;
 "while"                   return WHILE;
+"break"                   return BREAK;
 "return"                  return RETURN;
 
 "=="                      return EQ;

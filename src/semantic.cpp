@@ -34,6 +34,7 @@ struct SemanticAnalyzer::Impl {
     std::string errorMessage;
     std::vector<std::string> diagnosticMessages;
     std::unordered_set<const TopLevel*> invalidDeclarations;
+    int loopDepth = 0;
     TypedProgram typed;
 
     SymbolId addSymbol(SymbolKind kind, const std::string& name, const TypePtr& type) {
@@ -364,6 +365,10 @@ struct SemanticAnalyzer::Impl {
             definitelyReturns = true;
             return true;
         }
+        if (dynamic_cast<BreakStmt*>(&stmt)) {
+            if (loopDepth == 0) return fail(stmt, "'break' is only valid inside a loop");
+            return true;
+        }
         if (auto* ifStmt = dynamic_cast<IfStmt*>(&stmt)) {
             TypePtr condition = analyzeExpr(*ifStmt->cond);
             if (!condition || !isScalar(condition)) {
@@ -388,7 +393,10 @@ struct SemanticAnalyzer::Impl {
                 whileStmt->cond->inferredType = Type::pointerTo(Type::voidType());
             }
             bool ignored = false;
-            return analyzeScoped(*whileStmt->body, ignored);
+            ++loopDepth;
+            const bool ok = analyzeScoped(*whileStmt->body, ignored);
+            --loopDepth;
+            return ok;
         }
         return fail(stmt, "internal error: unknown statement node");
     }
