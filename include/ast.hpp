@@ -109,13 +109,15 @@ struct ExprStmt final : Stmt {
 
 struct VarDeclStmt final : Stmt {
     VarDeclStmt(TypePtr type, std::string variableName,
-                std::unique_ptr<Expr> initializer, int sourceLine, int sourceColumn = 1)
+                std::unique_ptr<Expr> initializer, bool constant, int sourceLine,
+                int sourceColumn = 1)
         : Stmt(sourceLine, sourceColumn), declaredType(std::move(type)),
           name(std::move(variableName)),
-          init(std::move(initializer)) {}
+          init(std::move(initializer)), isConst(constant) {}
     TypePtr declaredType;
     std::string name;
     std::unique_ptr<Expr> init;
+    bool isConst;
 };
 
 struct ReturnStmt final : Stmt {

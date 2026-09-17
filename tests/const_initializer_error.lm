@@ -1,0 +1,8 @@
+int runtime_value(void) {
+    return 42;
+}
+
+int main(void) {
+    const int answer = runtime_value();
+    return answer;
+}

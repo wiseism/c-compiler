@@ -20,6 +20,7 @@ struct FunctionInfo {
 struct Binding {
     TypePtr type;
     SymbolId symbol;
+    bool isConst = false;
 };
 
 } // namespace
@@ -101,6 +102,31 @@ struct SemanticAnalyzer::Impl {
         return unary && unary->op == "*";
     }
 
+    bool isConstLValue(const Expr& expr) const {
+        if (const auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
+            const Binding* binding = lookup(variable->name);
+            return binding && binding->isConst;
+        }
+        if (const auto* index = dynamic_cast<const IndexExpr*>(&expr)) {
+            return isConstLValue(*index->base);
+        }
+        return false;
+    }
+
+    static bool isConstantExpression(const Expr& expr) {
+        if (dynamic_cast<const NumberExpr*>(&expr) || dynamic_cast<const StringExpr*>(&expr) ||
+            dynamic_cast<const NullExpr*>(&expr)) return true;
+        if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+            return (unary->op == "-" || unary->op == "!") &&
+                   isConstantExpression(*unary->operand);
+        }
+        if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
+            return isConstantExpression(*binary->lhs) &&
+                   isConstantExpression(*binary->rhs);
+        }
+        return false;
+    }
+
     static void resolveNull(Expr& expr, const TypePtr& expected) {
         if (expr.inferredType && expr.inferredType->kind() == TypeKind::NullPointer &&
             isPointerType(expected)) {
@@ -138,6 +164,9 @@ struct SemanticAnalyzer::Impl {
         } else if (auto* assign = dynamic_cast<AssignExpr*>(&expr)) {
             if (!isLValue(*assign->target)) {
                 return failExpr(expr, "left side of assignment is not assignable");
+            }
+            if (isConstLValue(*assign->target)) {
+                return failExpr(*assign->target, "cannot assign to const object");
             }
             TypePtr target = analyzeExpr(*assign->target);
             if (!target) return nullptr;
@@ -331,6 +360,16 @@ struct SemanticAnalyzer::Impl {
             if (currentScope.count(declaration->name)) {
                 return fail(stmt, "redeclaration of variable '" + declaration->name + "'");
             }
+            if (declaration->isConst && !declaration->init) {
+                return fail(stmt, "const variable '" + declaration->name +
+                                      "' requires an initializer");
+            }
+            if (declaration->isConst &&
+                !isConstantExpression(*declaration->init)) {
+                return fail(*declaration->init, "initializer for const variable '" +
+                                                    declaration->name +
+                                                    "' is not a constant expression");
+            }
             if (declaration->init) {
                 TypePtr initializer = analyzeExpr(*declaration->init);
                 if (!initializer) return false;
@@ -345,7 +384,8 @@ struct SemanticAnalyzer::Impl {
             const SymbolId symbol = addSymbol(SymbolKind::Local, declaration->name,
                                               declaration->declaredType);
             currentScope.emplace(declaration->name,
-                                 Binding{declaration->declaredType, symbol});
+                                 Binding{declaration->declaredType, symbol,
+                                         declaration->isConst});
             typed.localDeclarations[declaration] = symbol;
             return true;
         }
@@ -468,7 +508,7 @@ struct SemanticAnalyzer::Impl {
         if (existing == globals.end()) {
             const SymbolId symbol = addSymbol(SymbolKind::Global, global.name,
                                               global.declaredType);
-            globals.emplace(global.name, Binding{global.declaredType, symbol});
+            globals.emplace(global.name, Binding{global.declaredType, symbol, false});
             typed.globals.push_back(TypedGlobal{symbol, global.name, global.declaredType, nullptr});
         }
         if (!global.isExtern) {
@@ -519,7 +559,7 @@ struct SemanticAnalyzer::Impl {
             }
             const SymbolId symbol = addSymbol(SymbolKind::Parameter, parameter.name,
                                               parameter.type);
-            scopes.back().emplace(parameter.name, Binding{parameter.type, symbol});
+            scopes.back().emplace(parameter.name, Binding{parameter.type, symbol, false});
             typedFunction.parameterSymbols.push_back(symbol);
         }
 

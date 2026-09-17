@@ -19,7 +19,7 @@ run_backend() {
     printf '%s\n' "$?" >"$output_dir/$case_name.$backend.status"
 }
 
-for case_name in program forward_call bitwise_xor break_loop string_puts void_globals_fold pointers_arrays; do
+for case_name in program forward_call bitwise_xor break_loop string_puts const_local void_globals_fold pointers_arrays; do
     run_backend "$api_compiler" api "$case_name" || exit 1
     run_backend "$text_compiler" text "$case_name" || exit 1
     if ! cmp -s "$output_dir/$case_name.api.out" "$output_dir/$case_name.text.out" ||

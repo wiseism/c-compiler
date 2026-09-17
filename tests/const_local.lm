@@ -1,0 +1,4 @@
+int main(void) {
+    const int answer = (20 * 2) + 2;
+    return answer;
+}

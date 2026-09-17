@@ -88,6 +88,34 @@ if ! grep -q "cannot initialize 'value' of type 'int' with 'char\*'" \
     exit 1
 fi
 
+"$compiler" "$fixtures/const_local.lm" -o "$output_dir/const_local.ll" || exit 1
+"$clang" "$output_dir/const_local.ll" -o "$output_dir/const_local" || exit 1
+"$output_dir/const_local"
+const_status=$?
+if [[ $const_status -ne 42 ]]; then
+    echo "expected const-local program exit status 42, got $const_status" >&2
+    exit 1
+fi
+if "$compiler" "$fixtures/const_assignment_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/const_assignment_error.txt"; then
+    echo "assignment to const unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "cannot assign to const object" "$output_dir/const_assignment_error.txt"; then
+    echo "const assignment diagnostic was not specific" >&2
+    exit 1
+fi
+if "$compiler" "$fixtures/const_initializer_error.lm" -o "$output_dir/bad.ll" \
+    2>"$output_dir/const_initializer_error.txt"; then
+    echo "nonconstant const initializer unexpectedly compiled" >&2
+    exit 1
+fi
+if ! grep -q "initializer for const variable 'answer' is not a constant expression" \
+    "$output_dir/const_initializer_error.txt"; then
+    echo "const initializer diagnostic was not specific" >&2
+    exit 1
+fi
+
 if "$compiler" "$fixtures/semantic_error.lm" -o "$output_dir/bad.ll" \
     2>"$output_dir/semantic_error.txt"; then
     echo "semantic error input unexpectedly compiled" >&2

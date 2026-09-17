@@ -59,6 +59,7 @@ IDENT      [A-Za-z_][A-Za-z0-9_]*
 
 "int"                     return INT;
 "char"                    return CHAR;
+"const"                   return CONST;
 "void"                    return VOID;
 "null"                    return NULLPTR;
 "extern"                  return EXTERN;

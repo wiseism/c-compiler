@@ -48,7 +48,7 @@ static std::vector<std::unique_ptr<T>> adopt(std::vector<T*>* raw) {
     lumen::TypePtr* type;
 }
 
-%token INT CHAR VOID EXTERN IF ELSE WHILE BREAK RETURN NULLPTR
+%token INT CHAR VOID CONST EXTERN IF ELSE WHILE BREAK RETURN NULLPTR
 %token EQ NE LE GE AND OR INVALID
 %token <number> NUMBER
 %token <text> IDENTIFIER STRING_LITERAL
@@ -223,13 +223,13 @@ statement
 variable_decl
     : type_specifier IDENTIFIER ';' {
           $$ = new lumen::VarDeclStmt(std::move(*$1), std::move(*$2),
-                                      nullptr, @1.first_line, @1.first_column);
+                                      nullptr, false, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
       }
     | type_specifier IDENTIFIER '=' expression ';' {
           $$ = new lumen::VarDeclStmt(std::move(*$1), std::move(*$2),
-                                      std::unique_ptr<lumen::Expr>($4), @1.first_line,
+                                      std::unique_ptr<lumen::Expr>($4), false, @1.first_line,
                                       @1.first_column);
           delete $1;
           delete $2;
@@ -237,9 +237,22 @@ variable_decl
     | type_specifier IDENTIFIER '[' NUMBER ']' ';' {
           $$ = new lumen::VarDeclStmt(
               lumen::Type::arrayOf(std::move(*$1), static_cast<std::size_t>($4)),
-              std::move(*$2), nullptr, @1.first_line, @1.first_column);
+              std::move(*$2), nullptr, false, @1.first_line, @1.first_column);
           delete $1;
           delete $2;
+      }
+    | CONST type_specifier IDENTIFIER '=' expression ';' {
+          $$ = new lumen::VarDeclStmt(std::move(*$2), std::move(*$3),
+                                      std::unique_ptr<lumen::Expr>($5), true, @1.first_line,
+                                      @1.first_column);
+          delete $2;
+          delete $3;
+      }
+    | CONST type_specifier IDENTIFIER ';' {
+          $$ = new lumen::VarDeclStmt(std::move(*$2), std::move(*$3),
+                                      nullptr, true, @1.first_line, @1.first_column);
+          delete $2;
+          delete $3;
       }
     ;
 
